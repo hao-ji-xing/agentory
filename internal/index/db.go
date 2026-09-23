@@ -155,17 +155,15 @@ var dropAll = []string{
 func (db *DB) migrate() error {
 	var v string
 	err := db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v)
-	if err == nil && v != strconv.Itoa(SchemaVersion) {
+	switch {
+	case err == nil && v == strconv.Itoa(SchemaVersion):
+		return nil // up to date; opening does not write
+	case err == nil:
 		if err := db.dropAll(); err != nil {
 			return err
 		}
 	}
 	if _, err := db.Exec(schema); err != nil {
-		return err
-	}
-	// A larger in-memory term buffer means fewer, bigger segments and far
-	// less merging during bulk ingestion (default is 1 MiB).
-	if _, err := db.Exec(`INSERT INTO msgs_fts(msgs_fts, rank) VALUES('hashsize', 33554432)`); err != nil {
 		return err
 	}
 	return db.SetMeta("schema_version", strconv.Itoa(SchemaVersion))
