@@ -73,6 +73,11 @@ func TestParseRules(t *testing.T) {
 			wants: []want{{model.KindToolResult, "user", "", "line one\n[image]\nline two"}},
 		},
 		{
+			name:  "tool_result is cleaned too",
+			line:  `{"type":"user",` + hdr + `,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"ok\n<system-reminder>\nfile changed on disk\n</system-reminder>"}]}]}}`,
+			wants: []want{{model.KindToolResult, "user", "", "ok"}},
+		},
+		{
 			name:  "isMeta is not a prompt",
 			line:  `{"type":"user",` + hdr + `,"isMeta":true,"message":{"role":"user","content":"Base directory for this skill: /x"}}`,
 			wants: []want{{model.KindMeta, "user", "", "Base directory for this skill: /x"}},

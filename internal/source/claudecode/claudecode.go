@@ -195,7 +195,7 @@ func parseUser(r *record) []model.Message {
 		case "image":
 			parts = append(parts, "[image]")
 		case "tool_result":
-			emit(model.KindToolResult, strings.TrimSpace(renderToolResult(b.Content)))
+			emit(model.KindToolResult, Clean(renderToolResult(b.Content)))
 		}
 	}
 	if len(parts) > 0 {
