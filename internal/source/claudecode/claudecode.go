@@ -336,10 +336,18 @@ var (
 )
 
 // Clean strips injected wrappers that would otherwise drown search results.
+// The cheap substring checks skip the regexes for the common case of large
+// tool output without any wrapper.
 func Clean(s string) string {
-	s = reSystemReminder.ReplaceAllString(s, "")
-	s = reCaveat.ReplaceAllString(s, "")
-	s = reStdout.ReplaceAllString(s, "")
+	if strings.Contains(s, "<system-reminder>") {
+		s = reSystemReminder.ReplaceAllString(s, "")
+	}
+	if strings.Contains(s, "<local-command-caveat>") {
+		s = reCaveat.ReplaceAllString(s, "")
+	}
+	if strings.Contains(s, "<local-command-stdout>") {
+		s = reStdout.ReplaceAllString(s, "")
+	}
 	return strings.TrimSpace(s)
 }
 
