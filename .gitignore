@@ -1,0 +1,19 @@
+# Private notes and specs
+.local/
+
+# Index databases
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+/agentory
+/agentory.exe
+/dist/
+*.test
+*.out
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
