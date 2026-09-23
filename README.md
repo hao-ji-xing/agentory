@@ -213,7 +213,7 @@ narrow the scan; `--explain` shows which path each term takes.
 
 **How big is the index?**
 On a real history of 1,025 Claude Code transcripts (1.4 GB of JSONL) a full
-build took 52 s and produced a 634 MiB index on an Apple Silicon laptop; later
+build took 51 s and produced a 641 MiB index on an Apple Silicon laptop; later
 syncs take tens of milliseconds.
 
 **Codex support?**
