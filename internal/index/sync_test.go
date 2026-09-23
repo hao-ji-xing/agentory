@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -426,7 +427,9 @@ func TestPrune(t *testing.T) {
 	os.Remove(e.path("b.jsonl"))
 
 	e.sync() // default: history is retained
-	eq(t, e.texts(), []string{"keep", "gone"})
+	got := e.texts()
+	sort.Strings(got) // files are parsed in parallel, so ids are unordered
+	eq(t, got, []string{"gone", "keep"})
 
 	st, err := e.db.Sync(context.Background(), e.src, Options{Prune: true})
 	if err != nil || st.Pruned != 1 {
