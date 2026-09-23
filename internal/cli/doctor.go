@@ -156,7 +156,9 @@ func (a *app) watch(args []string) error {
 	addTree := func(root string) {
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err == nil && d.IsDir() {
-				w.Add(p)
+				if err := w.Add(p); err != nil {
+					fmt.Fprintf(a.stderr, "cannot watch %s: %v\n", p, err)
+				}
 			}
 			return nil
 		})
