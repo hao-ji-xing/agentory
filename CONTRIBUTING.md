@@ -31,6 +31,7 @@ internal/source/claudecode/  Claude Code transcript parser
 internal/index/              SQLite schema, incremental sync
 internal/query/              search, context, listings, snippets
 internal/cli/                commands, flags, rendering
+skills/agentory/             Claude Code skill that teaches agents to use the CLI
 testdata/                    synthetic transcripts used by tests
 ```
 

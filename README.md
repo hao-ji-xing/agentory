@@ -95,8 +95,17 @@ The first query builds the index automatically if you skip `agentory index`.
 
 ### Let your agent use it
 
-Add something like this to your `CLAUDE.md` (or the equivalent instructions
-file of your agent):
+This repository ships a Claude Code skill in
+[`skills/agentory/SKILL.md`](skills/agentory/SKILL.md). Install it once and
+Claude will reach for `agentory` on its own when you ask things like "did we
+discuss X before?" or "which skills did I use last week?":
+
+```sh
+mkdir -p ~/.claude/skills
+ln -s "$PWD/skills/agentory" ~/.claude/skills/agentory   # from a clone
+```
+
+Other agents: add something like this to their instructions file:
 
 ```markdown
 ## Conversation history
@@ -111,6 +120,7 @@ Filters: `-p <project>`, `-s 30d`, `-k prompt,reply`, `--all` for tool output.
 agentory <query> [flags]              same as search (the most common path)
 agentory search <query> [flags]
 agentory show <msg-id|session-id> [-C N]
+agentory top --by <dimension> [query] [flags]
 agentory sessions [flags]
 agentory projects
 agentory index [--full] [--rebuild] [--prune] [-v]
@@ -138,12 +148,36 @@ agentory watch                        keep the index updated (fsnotify)
 | `--json` | machine-readable output |
 | `--no-sync` | skip the incremental sync before the query |
 | `--explain` | show whether each term used FTS5 `MATCH` or the `LIKE` fallback |
+| `--full-text` | print whole messages; in `--json` add a `text` field next to the snippet |
 | `--color <when>` | `auto` (default; off when not a TTY or `NO_COLOR` is set), `always`, `never` |
 
 Query syntax: whitespace-separated terms are ANDed; each term is a
 case-insensitive substring; wrap a phrase in double quotes (`"lock ordering"`).
 Terms of three or more characters use the trigram index; shorter ones fall
 back to `LIKE`.
+
+### Usage statistics: `top`
+
+`agentory top --by <dimension>` counts matching messages per group, with the
+same query terms and filters as `search`:
+
+```console
+$ agentory top --by skill --since 7d
+    25  ic-commit          last 2026-09-23 17:51
+    14  ic-web-debug       last 2026-09-23 17:27
+    10  ic-review          last 2026-09-23 17:42
+…
+134 messages in 35 groups by skill, showing 20 (use -n for more)
+```
+
+| `--by` | groups by |
+|---|---|
+| `skill` | skill name of Skill tool calls |
+| `command` | slash commands you typed |
+| `tool` | tool name |
+| `input:<key>` | one tool input field, e.g. `input:subagent_type` |
+| `project`, `branch`, `session`, `kind`, `role`, `source` | as named |
+| `day` | local calendar day |
 
 ### Message kinds
 

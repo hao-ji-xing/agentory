@@ -28,3 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commands: `search`, `show`, `sessions`, `projects`, `index`, `stats`,
   `doctor`, `watch`, `version`.
 - Tool text truncation (2,000 characters, or 40,000 with `index --full`).
+- `top --by <dimension>` aggregates matching messages by skill, slash
+  command, tool, tool input field (`input:<key>`), project, branch, session,
+  kind, role, source or day.
+- `search --full-text` prints whole messages and adds `text` to JSON hits.
+- A Claude Code skill (`skills/agentory/SKILL.md`) that teaches the agent when
+  and how to search history and compute usage statistics.
+
+### Changed
+
+- Tool input is rendered with short values first, so identifying fields such
+  as `skill` or `subagent_type` survive truncation of long arguments. Existing
+  indexes are rebuilt automatically (schema version 2).

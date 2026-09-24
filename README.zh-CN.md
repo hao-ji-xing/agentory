@@ -91,7 +91,15 @@ agentory sessions -p shop -s 7d     # 某项目最近 7 天的会话
 
 ### 让 agent 自己用
 
-在 `CLAUDE.md`（或你的 agent 的同类指令文件）里加一段：
+仓库自带一个 Claude Code skill：[`skills/agentory/SKILL.md`](skills/agentory/SKILL.md)。
+装一次之后，你问「以前聊过 X 吗」「上周我用了哪些 skill」这类问题时，Claude 会自己调用 `agentory`：
+
+```sh
+mkdir -p ~/.claude/skills
+ln -s "$PWD/skills/agentory" ~/.claude/skills/agentory   # 在仓库目录下执行
+```
+
+其他 agent：在它的指令文件里加一段类似的说明：
 
 ```markdown
 ## Conversation history
@@ -106,6 +114,7 @@ Filters: `-p <project>`, `-s 30d`, `-k prompt,reply`, `--all` for tool output.
 agentory <query> [flags]              等价于 search（最高频路径）
 agentory search <query> [flags]
 agentory show <msg-id|session-id> [-C N]
+agentory top --by <维度> [query] [flags]
 agentory sessions [flags]
 agentory projects
 agentory index [--full] [--rebuild] [--prune] [-v]
@@ -133,10 +142,33 @@ agentory watch                        基于 fsnotify 常驻更新索引
 | `--json` | 机器可读输出 |
 | `--no-sync` | 跳过查询前的增量同步 |
 | `--explain` | 显示每个词走的是 FTS5 `MATCH` 还是 `LIKE` 回退 |
+| `--full-text` | 输出完整消息；`--json` 下在 snippet 之外多一个 `text` 字段 |
 | `--color <何时>` | `auto`（默认；非 TTY 或设置了 `NO_COLOR` 时关闭）、`always`、`never` |
 
 查询语法：空格分隔的多个词是 AND 关系；每个词做大小写不敏感的子串匹配；
 用双引号包短语（`"lock ordering"`）。≥3 个字符的词走 trigram 索引，更短的词回退到 `LIKE`。
+
+### 使用统计：`top`
+
+`agentory top --by <维度>` 按分组统计命中消息数，查询词和过滤参数与 `search` 相同：
+
+```console
+$ agentory top --by skill --since 7d
+    25  ic-commit          last 2026-09-23 17:51
+    14  ic-web-debug       last 2026-09-23 17:27
+    10  ic-review          last 2026-09-23 17:42
+…
+134 messages in 35 groups by skill, showing 20 (use -n for more)
+```
+
+| `--by` | 分组依据 |
+|---|---|
+| `skill` | Skill 工具调用的 skill 名 |
+| `command` | 你手敲的斜杠命令 |
+| `tool` | 工具名 |
+| `input:<key>` | 工具入参的某个字段，如 `input:subagent_type` |
+| `project`、`branch`、`session`、`kind`、`role`、`source` | 同名字段 |
+| `day` | 本地日期 |
 
 ### 消息分类（kind）
 
