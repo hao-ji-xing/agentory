@@ -2,7 +2,8 @@
 name: agentory
 description: >
   Search and analyze the user's past AI coding agent conversations (Claude Code
-  transcripts under ~/.claude/projects) with the `agentory` CLI: full-text search
+  transcripts under ~/.claude/projects and Codex transcripts under ~/.codex) with
+  the `agentory` CLI: full-text search
   across every session, read a hit with surrounding context, list sessions and
   projects, aggregate usage (skills, slash commands, tools, sub-agents, files,
   errors, per project, model or day), show how one command or skill is used
@@ -16,7 +17,8 @@ description: >
   token 和缓存命中). Also use it before re-deriving a decision that may already
   exist in an earlier session. Do not use it for the current conversation's
   own context (it is already in front of you) or for searching source code
-  (use grep/rg).
+  (use grep/rg). Also use it to install or upgrade the agentory CLI itself
+  (安装 / 升级 agentory).
 ---
 
 # agentory — conversation history search
@@ -26,6 +28,51 @@ first syncs incrementally (only newly appended bytes are read, typically tens of
 milliseconds), so results include the session that is running right now.
 
 Always pass `--json` and parse the output; human output is for people.
+
+## Keep the CLI installed and current
+
+The user installs only this skill; installing and upgrading the `agentory`
+CLI is your job. Before the first `agentory` command of a session, run this
+check once (macOS / Linux) and say in one line what it did:
+
+```sh
+latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/hao-ji-xing/agentory/releases/latest); latest=${latest##*/v}
+current=$(agentory version 2>/dev/null | awk '{print $2}')
+case "$current" in
+  "$latest") echo "agentory $current is current" ;;
+  ""|[0-9]*.[0-9]*.[0-9]*) curl -fsSL https://raw.githubusercontent.com/hao-ji-xing/agentory/main/install.sh | sh ;;
+  *) echo "agentory $current is a build from source; not touching it" ;;
+esac
+```
+
+It installs the latest GitHub release when `agentory` is missing or older,
+and leaves builds from source (versions like `dcdd16f-dirty` or `dev`) alone.
+On Windows run the PowerShell installer instead, which also always takes the
+latest release:
+
+```powershell
+irm https://raw.githubusercontent.com/hao-ji-xing/agentory/main/install.ps1 | iex
+```
+
+- The installer verifies the download against the release's `checksums.txt`
+  and puts the binary in `~/.local/bin` (Windows:
+  `%LOCALAPPDATA%\Programs\agentory`, added to the user PATH). The index in
+  `~/.local/share/agentory/` is kept; if a new version changed its format,
+  the next command rebuilds it on its own (about 20 s).
+- If the installer says `~/.local/bin` is not on `PATH`, call
+  `~/.local/bin/agentory` by its full path and give the user the
+  `export PATH=…` line it printed. Do not edit their shell profile without
+  asking.
+- Also upgrade, without waiting for the next session, when the binary lacks
+  something this skill describes: an unknown command or flag,
+  `unknown source "codex"`, or `doctor` not listing a codex root.
+- Update this skill with `npx -y skills update agentory -g -y` (when it was
+  added with `npx skills`). The installer never overwrites a skill that
+  `npx skills` manages.
+- GitHub unreachable and Go 1.26+ present: `go install
+  github.com/hao-ji-xing/agentory@latest` builds the latest tag from source.
+- A fresh install indexes on the first query (about 20 s for 1.4 GB of
+  transcripts); `agentory doctor` checks the setup.
 
 ## Pick the right command
 
@@ -154,6 +201,20 @@ change). Timestamps are Unix milliseconds; use
 `datetime(ts/1000, 'unixepoch', 'localtime')`. Prefer `top`/`usage` when they
 answer the question.
 
+## Two sources: Claude Code and Codex
+
+Every command covers both agents unless `--source claude` or `--source codex`
+narrows it; `top --by source` splits any count. For Codex data keep in mind:
+
+- `prompt_source`: `typed` for interactive prompts, `sdk` for `codex exec` runs
+  (mostly started by another agent, e.g. a review), `automation` for scheduled
+  runs. Exclude `sdk` and `automation` when analyzing how the user writes.
+- Skills: `actor=user` means the prompt mentioned `[$name](…)`;
+  `actor=agent` means Codex read that skill's `SKILL.md`.
+- Models are per turn (`gpt-…`); there is no cost, so `--measure cost` only
+  reflects Claude Code sessions.
+- `think` holds reasoning summaries only; exec sessions usually have no title.
+
 ## Answering well
 
 - Quote conclusions with their date, project and message id so the user can
@@ -168,10 +229,8 @@ answer the question.
 
 ## Troubleshooting
 
-- `agentory: command not found` → install with
-  `go install github.com/hao-ji-xing/agentory@latest` and make sure `$(go env GOPATH)/bin`
-  is on `PATH`, or download a release binary.
-- First run builds the whole index (about a minute for ~1.4 GB of transcripts).
+- `agentory: command not found` → see "Keep the CLI installed and current" above.
+- First run builds the whole index (about 20 s for ~1.4 GB of transcripts).
 - Run `agentory doctor` for root directory, FTS consistency and freshness
   checks. `AGENTORY_DB` overrides the index path, `CLAUDE_CONFIG_DIR` the
-  Claude Code directory.
+  Claude Code directory, `CODEX_HOME` the Codex directory.

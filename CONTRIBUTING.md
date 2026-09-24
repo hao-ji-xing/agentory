@@ -28,6 +28,7 @@ main.go                      entry point
 internal/model/              provider-agnostic types and the Source interface
 internal/source/registry.go  list of built-in sources
 internal/source/claudecode/  Claude Code transcript parser
+internal/source/codex/       Codex transcript parser
 internal/index/              SQLite schema, incremental sync
 internal/query/              search, context, listings, snippets
 internal/cli/                commands, flags, rendering
@@ -39,7 +40,10 @@ testdata/                    synthetic transcripts used by tests
 
 1. Create `internal/source/<name>/` implementing `model.Source`.
    `ParseLine` must be stateless: one raw line in, messages and/or session
-   metadata out.
+   metadata out. If a line cannot be understood without earlier lines (Codex
+   writes the session id only once), also implement `model.FileSource`; its
+   parser must recover that context from the head of the file when parsing
+   resumes mid-file.
 2. Map every record onto the shared `model.Kind` set and strip injected noise.
 3. Register the constructor in `internal/source/registry.go`.
 4. Add table-driven parser tests and at least one end-to-end CLI test.
@@ -63,3 +67,15 @@ under `testdata/` must be invented. Use fake home directories such as
   (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `ci:`, `chore:`).
 - Keep `gofmt -l .` empty and `go vet ./...` clean; CI checks both.
 - Update `CHANGELOG.md` under **Unreleased** for user-visible changes.
+
+## Releasing
+
+Push a tag such as `v0.2.0`. The release workflow runs the tests, builds a
+snapshot and checks it with `scripts/test-install.sh` (serve the archives
+locally, run `install.sh` against them, verify the binary and the skill), and
+then publishes the archives and `checksums.txt` with GoReleaser. To run the
+same check locally:
+
+```sh
+goreleaser release --snapshot --clean && sh scripts/test-install.sh
+```

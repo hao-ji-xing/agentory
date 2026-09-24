@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-24
+
 ### Added
+
+- Codex source: parses `$CODEX_HOME/sessions/**/rollout-*.jsonl` and
+  `archived_sessions/`, with thread titles from `session_index.jsonl`, for the
+  transcript layouts of Codex 0.132 through 0.153. Prompts, replies, reasoning
+  summaries, tool calls and results, interruptions, turns and token usage are
+  mapped onto the shared kinds; duplicated UI events and injected context are
+  left out. `codex exec` prompts get `prompt_source=sdk`, automation runs
+  `prompt_source=automation`; `[$skill](…)` mentions and `SKILL.md` reads
+  count as skill invocations.
+- `model.FileSource`: an optional source interface for transcripts whose lines
+  depend on earlier lines of the same file.
+- Moved transcripts are recognized by file name and keep their rows instead of
+  being indexed twice (`index` reports them as `moved`).
+- `doctor` reports a missing agent directory as skipped rather than failed.
+- `install.sh` (macOS, Linux) and `install.ps1` (Windows) install the latest
+  GitHub release: checksum-verified binary in `~/.local/bin` plus the agent
+  skill for Claude Code and Codex, unless `npx skills` manages the skill.
+  Release archives now bundle the skill.
+- The skill can be added on its own with `npx -y skills add
+  hao-ji-xing/agentory -g -y`; it then installs the latest release of the CLI
+  on first use and upgrades it when a newer release exists.
+- CI builds a GoReleaser snapshot and runs the installer against it
+  (`scripts/test-install.sh`), so a broken archive or installer fails the
+  build before a release.
 
 - Claude Code source: parses `~/.claude/projects/**/*.jsonl`, including
   sub-agent transcripts, session titles (custom titles win over generated

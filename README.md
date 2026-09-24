@@ -8,8 +8,9 @@ English | [简体中文](README.zh-CN.md)
 **Full-text search over your AI coding agent conversation history.**
 
 `agentory` indexes the session transcripts that coding agents leave on your
-disk (currently [Claude Code](https://docs.claude.com/en/docs/claude-code);
-the source layer is pluggable) into a local SQLite FTS5 database, so that you
+disk (currently [Claude Code](https://docs.claude.com/en/docs/claude-code) and
+[Codex](https://developers.openai.com/codex); the source layer is pluggable)
+into a local SQLite FTS5 database, so that you
 — or the agent itself — can answer *"did we discuss X before, and what was the
 conclusion?"* in milliseconds.
 
@@ -65,15 +66,46 @@ Markers: `u>` prompt, `u/` slash command, `a>` reply, `a~` thinking,
 
 ## Install
 
+The simplest way is to install only the agent skill. The agent then installs
+the latest `agentory` release on first use and keeps it up to date:
+
+```sh
+npx -y skills add hao-ji-xing/agentory -g -y
+```
+
+This puts the skill in `~/.agents/skills/` for Codex and the other agents that
+read it, and links it for Claude Code. Update the skill later with
+`npx -y skills update agentory -g -y`.
+
+To install the CLI yourself instead, on macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hao-ji-xing/agentory/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/hao-ji-xing/agentory/main/install.ps1 | iex
+```
+
+The installer downloads the latest [release](https://github.com/hao-ji-xing/agentory/releases)
+for your OS and CPU (amd64/arm64), checks it against the release's
+`checksums.txt`, puts the binary in `~/.local/bin` (Windows:
+`%LOCALAPPDATA%\Programs\agentory`, added to your PATH) and installs the agent
+skill for Claude Code and Codex if they are present. Pass options after
+`sh -s --`: `--version v0.2.0`, `--dir <path>`, `--no-skill`. Then run
+`agentory doctor`.
+
+To upgrade, run the same command again: it installs the latest release and
+refreshes the skill, and keeps your index. Check what you have with
+`agentory version`.
+
 With Go 1.26+:
 
 ```sh
 go install github.com/hao-ji-xing/agentory@latest
 ```
-
-Or download a prebuilt binary for Linux, macOS or Windows (amd64/arm64) from
-the [releases page](https://github.com/hao-ji-xing/agentory/releases), put it on
-your `PATH`, and run `agentory doctor`.
 
 From source:
 
@@ -97,14 +129,18 @@ The first query builds the index automatically if you skip `agentory index`.
 
 ### Let your agent use it
 
-This repository ships a Claude Code skill in
-[`skills/agentory/SKILL.md`](skills/agentory/SKILL.md). Install it once and
-Claude will reach for `agentory` on its own when you ask things like "did we
-discuss X before?" or "which skills did I use last week?":
+This repository ships an agent skill in
+[`skills/agentory/SKILL.md`](skills/agentory/SKILL.md). With it, the agent
+reaches for `agentory` on its own when you ask things like "did we discuss X
+before?" or "which skills did I use last week?", and installs or upgrades the
+CLI when needed. Add it with `npx -y skills add hao-ji-xing/agentory -g -y`
+(see [Install](#install)); the CLI installer also puts it in
+`~/.claude/skills/` and `~/.codex/skills/` unless `npx skills` already manages
+it. From a clone, link it instead:
 
 ```sh
 mkdir -p ~/.claude/skills
-ln -s "$PWD/skills/agentory" ~/.claude/skills/agentory   # from a clone
+ln -s "$PWD/skills/agentory" ~/.claude/skills/agentory
 ```
 
 Other agents: add something like this to their instructions file:
@@ -144,7 +180,7 @@ agentory watch                        keep the index updated (fsnotify)
 | `--role <role>` | `user`, `assistant` or `system` |
 | `--tool <name>` | tool calls of one tool (e.g. `--tool Bash`) |
 | `--branch <name>` | git branch |
-| `--source <list>` | history source (currently `claude`) |
+| `--source <list>` | history source: `claude`, `codex` |
 | `-n, --limit <n>` | max results (default 20), newest first |
 | `-C, --context <n>` | n messages before/after each hit (same transcript only) |
 | `--all` | also search `tool_use`, `tool_result`, `meta`, `system` |
@@ -243,6 +279,7 @@ documents the tables (`msgs`, the `invocations` view, `requests`, `turns`,
 |---|---|---|
 | `AGENTORY_DB` | `$XDG_DATA_HOME/agentory/index.db` or `~/.local/share/agentory/index.db` | index location |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | where Claude Code keeps `projects/` |
+| `CODEX_HOME` | `~/.codex` | where Codex keeps `sessions/`, `archived_sessions/` and `session_index.jsonl` |
 | `NO_COLOR` | unset | disable colors |
 
 ## How it works
@@ -262,9 +299,15 @@ documents the tables (`msgs`, the `invocations` view, `requests`, `turns`,
   searches match them with a `LIKE` scan instead (a few hundred milliseconds).
 - Deleted transcripts stay searchable (agents clean up old sessions on their
   own); use `agentory index --prune` to forget them.
+- A transcript that moved (Codex moves a session to `archived_sessions/` when
+  you archive it) is recognized by its file name and keeps its index rows
+  instead of being indexed twice.
 - Sources implement a small interface (`internal/model.Source`); adding another
-  agent is one package plus one line in `internal/source/registry.go`. Every
-  table has a `source` column already.
+  agent is one package plus one line in `internal/source/registry.go`. Sources
+  whose lines depend on earlier lines — Codex writes the session id once at the
+  top and the model once per turn — also implement `model.FileSource`: the
+  indexer then parses each file with a stateful parser, which reads the head of
+  the file again to recover that context when it resumes mid-file.
 
 ## FAQ
 
@@ -298,8 +341,23 @@ build takes about 20 s and produces a 430 MiB index on an Apple Silicon laptop; 
 syncs take tens of milliseconds.
 
 **Codex support?**
-Planned. The storage and source interface are ready; the parser is not
-written yet.
+Yes. Transcripts under `~/.codex/sessions/` and `~/.codex/archived_sessions/`
+are indexed with `source=codex`, and thread titles come from
+`session_index.jsonl`. Codex writes most facts twice (for the model and for the
+UI); one copy is kept, and injected context such as `AGENTS.md` and
+`<environment_context>` is left out. Differences from Claude Code:
+
+- `project` is derived from the session's working directory and encoded like a
+  Claude Code project key, so `-p` matches both agents.
+- Prompts from `codex exec` have `prompt_source=sdk`; scheduled automation runs
+  have `prompt_source=automation`.
+- A skill counts as invoked by the user when the prompt mentions it as
+  `[$name](…)`, and by the agent when it reads `skills/<name>/SKILL.md`.
+- `think` holds reasoning summaries only (the reasoning itself is encrypted);
+  a compaction is a `system` marker, because its summary is encrypted too.
+- Token usage comes from `token_count` events, with cached input split out of
+  input as for Claude. Codex reports no cost, so `--measure cost` is empty.
+- Guardian sub-agents belong to their parent session, like Claude sidechains.
 
 ## Contributing
 

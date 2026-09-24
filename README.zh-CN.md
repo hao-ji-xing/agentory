@@ -8,7 +8,8 @@
 **跨 AI coding agent 的对话历史全文检索 CLI。**
 
 `agentory` 把 coding agent 留在本地磁盘上的会话记录（目前支持
-[Claude Code](https://docs.claude.com/en/docs/claude-code)，数据源层可插拔）
+[Claude Code](https://docs.claude.com/en/docs/claude-code) 和
+[Codex](https://developers.openai.com/codex)，数据源层可插拔）
 建成本地 SQLite FTS5 索引，让你——或者 agent 自己——在毫秒级回答
 「我以前是不是聊过 X？当时的结论是什么？」。
 
@@ -61,15 +62,39 @@ plan: mode=like  terms: "折扣"→LIKE (shorter than 3 chars)
 
 ## 安装
 
+最简单的方式是只装 agent skill。agent 第一次用到时会自己安装最新的 `agentory` release，之后也会自动升级：
+
+```sh
+npx -y skills add hao-ji-xing/agentory -g -y
+```
+
+skill 会装进 `~/.agents/skills/`，Codex 等读取这个目录的 agent 直接可用，Claude Code 会得到一个指向它的链接。
+以后更新 skill：`npx -y skills update agentory -g -y`。
+
+也可以自己安装 CLI。macOS 和 Linux：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hao-ji-xing/agentory/main/install.sh | sh
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/hao-ji-xing/agentory/main/install.ps1 | iex
+```
+
+安装脚本会下载适合当前系统和 CPU（amd64/arm64）的最新 [Release](https://github.com/hao-ji-xing/agentory/releases)，
+用 release 里的 `checksums.txt` 校验，把二进制放进 `~/.local/bin`（Windows 是
+`%LOCALAPPDATA%\Programs\agentory`，并加入用户 PATH），本机装了 Claude Code 或 Codex 时顺便装上 agent skill。
+参数写在 `sh -s --` 后面：`--version v0.2.0`、`--dir <路径>`、`--no-skill`。装完运行 `agentory doctor` 自检。
+
+升级：重新运行同一条命令即可。它会装上最新 release、同时更新 skill，索引会保留。用 `agentory version` 查看当前版本。
+
 Go 1.26+：
 
 ```sh
 go install github.com/hao-ji-xing/agentory@latest
 ```
-
-或者从 [Releases 页面](https://github.com/hao-ji-xing/agentory/releases) 下载
-Linux / macOS / Windows（amd64/arm64）预编译二进制，放进 `PATH` 后运行
-`agentory doctor` 自检。
 
 从源码构建：
 
@@ -91,12 +116,14 @@ agentory sessions -p shop -s 7d     # 某项目最近 7 天的会话
 
 ### 让 agent 自己用
 
-仓库自带一个 Claude Code skill：[`skills/agentory/SKILL.md`](skills/agentory/SKILL.md)。
-装一次之后，你问「以前聊过 X 吗」「上周我用了哪些 skill」这类问题时，Claude 会自己调用 `agentory`：
+仓库自带一个 agent skill：[`skills/agentory/SKILL.md`](skills/agentory/SKILL.md)。有了它，
+你问「以前聊过 X 吗」「上周我用了哪些 skill」这类问题时，agent 会自己调用 `agentory`，需要时还会自己安装或升级 CLI。
+用 `npx -y skills add hao-ji-xing/agentory -g -y` 添加（见「安装」一节）；CLI 安装脚本也会把它放进
+`~/.claude/skills/` 和 `~/.codex/skills/`，已由 `npx skills` 管理时则不动。在源码仓库里可以改用符号链接：
 
 ```sh
 mkdir -p ~/.claude/skills
-ln -s "$PWD/skills/agentory" ~/.claude/skills/agentory   # 在仓库目录下执行
+ln -s "$PWD/skills/agentory" ~/.claude/skills/agentory
 ```
 
 其他 agent：在它的指令文件里加一段类似的说明：
@@ -136,7 +163,7 @@ agentory watch                        基于 fsnotify 常驻更新索引
 | `--role <角色>` | `user` / `assistant` / `system` |
 | `--tool <名字>` | 只看某个工具的调用（如 `--tool Bash`） |
 | `--branch <名字>` | git 分支 |
-| `--source <列表>` | 数据源（目前只有 `claude`） |
+| `--source <列表>` | 数据源：`claude`、`codex` |
 | `-n, --limit <n>` | 最多返回条数（默认 20），按时间倒序 |
 | `-C, --context <n>` | 每条命中前后各 n 条（不跨会话、不跨文件） |
 | `--all` | 同时搜索 `tool_use`、`tool_result`、`meta`、`system` |
@@ -226,6 +253,7 @@ recent:
 |---|---|---|
 | `AGENTORY_DB` | `$XDG_DATA_HOME/agentory/index.db` 或 `~/.local/share/agentory/index.db` | 索引库位置 |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code 存放 `projects/` 的目录 |
+| `CODEX_HOME` | `~/.codex` | Codex 存放 `sessions/`、`archived_sessions/` 和 `session_index.jsonl` 的目录 |
 | `NO_COLOR` | 未设置 | 关闭颜色 |
 
 ## 工作原理
@@ -240,8 +268,12 @@ recent:
   `--all` 搜索时对这部分走 `LIKE` 扫描（几百毫秒）。
 - 原始记录被删除后索引里仍保留（agent 会自己清理旧会话）；需要时用
   `agentory index --prune` 清掉。
+- 会话文件被挪动时（Codex 归档会话会把文件移到 `archived_sessions/`），按文件名识别为
+  同一个文件，只改路径，不会重复索引。
 - 数据源实现一个很小的接口（`internal/model.Source`）；接入新 agent 只需新增一个包，
-  再在 `internal/source/registry.go` 注册一行。所有表都已带 `source` 列。
+  再在 `internal/source/registry.go` 注册一行。如果某个数据源的行依赖前面的行——Codex
+  只在文件开头写一次会话 id、每个 turn 写一次模型——它再实现 `model.FileSource`：
+  索引器按文件用有状态的解析器解析，从文件中间续读时先重读文件开头恢复这些上下文。
 
 ## FAQ
 
@@ -270,7 +302,17 @@ trigram 索引无法匹配少于 3 个字符的词，这些词只能用 `LIKE` �
 全量建索引约 20 秒，索引库约 430 MiB；之后的增量同步只需几十毫秒。
 
 **支持 Codex 吗？**
-在计划中。存储结构和数据源接口都已就绪，解析器还没写。
+支持。`~/.codex/sessions/` 和 `~/.codex/archived_sessions/` 下的会话以 `source=codex`
+入库，会话标题取自 `session_index.jsonl`。Codex 大部分内容会写两份（给模型的和给界面的），
+只保留一份；`AGENTS.md`、`<environment_context>` 这类注入内容不入库。与 Claude Code 的差异：
+
+- `project` 由会话的工作目录生成，编码方式与 Claude Code 的项目名相同，所以 `-p` 能同时匹配两种 agent。
+- `codex exec` 发起的提示记为 `prompt_source=sdk`，定时自动化任务记为 `prompt_source=automation`。
+- 提示里以 `[$name](…)` 提到某个 skill，记为用户调用；agent 读取 `skills/<name>/SKILL.md`，记为 agent 调用。
+- `think` 只有推理摘要（推理原文是加密的）；上下文压缩记为一条 `system` 标记，因为摘要同样是加密的。
+- token 用量取自 `token_count` 事件，和 Claude 一样把缓存命中从输入里拆出来。Codex 不报告费用，
+  所以 `--measure cost` 为空。
+- guardian 子代理归属于父会话，和 Claude 的 sidechain 一样默认不显示。
 
 ## 参与贡献
 
