@@ -32,7 +32,7 @@ msgs — one searchable message
   request_id    API request of assistant messages (requests.request_id)
   tool_use_id   links a tool_use to its tool_result
   is_error      1 when a tool_result reported an error
-  prompt_source how a prompt was entered: typed | queued | system | …
+  prompt_source how a prompt was entered: typed | queued | sdk | automation | system | …
   file_path     file a tool call operates on (Read/Edit/Write …)
   inv_kind      command | skill | subagent for invocation messages, else ''
   inv_name      invoked command/skill/sub-agent type, without a leading /
