@@ -85,7 +85,7 @@ make install        # or: make build && ./agentory doctor
 ## Quick start
 
 ```sh
-agentory index                      # first build (about a minute for ~1.4 GB of transcripts)
+agentory index                      # first build (about 20 s for ~1.4 GB of transcripts)
 agentory top --by skill -s 7d       # which skills and commands you used this week
 agentory usage code-review          # how you use one of them
 agentory "lock ordering"            # search; same as `agentory search ...`
@@ -255,8 +255,11 @@ documents the tables (`msgs`, the `invocations` view, `requests`, `turns`,
   that the first 4 KiB are unchanged; if a file was rewritten, shrank, went
   back in time, or the truncation mode changed, that file is re-indexed from
   scratch.
-- `msgs_fts` is an external-content FTS5 table (`tokenize='trigram'`) kept in
-  sync by `AFTER INSERT/DELETE/UPDATE` triggers.
+- `msgs_fts` is a contentless FTS5 table (`tokenize='trigram'`) kept in sync by
+  `AFTER INSERT/DELETE/UPDATE` triggers. Tool call arguments and output — about
+  80% of all text, and not searched by default — are left out of it, which makes
+  a full build about three times faster and the index 40% smaller; `--all`
+  searches match them with a `LIKE` scan instead (a few hundred milliseconds).
 - Deleted transcripts stay searchable (agents clean up old sessions on their
   own); use `agentory index --prune` to forget them.
 - Sources implement a small interface (`internal/model.Source`); adding another
@@ -291,7 +294,7 @@ narrow the scan; `--explain` shows which path each term takes.
 
 **How big is the index?**
 On a real history of 1,025 Claude Code transcripts (1.4 GB of JSONL) a full
-build took about 60 s and produced a 720 MiB index on an Apple Silicon laptop; later
+build takes about 20 s and produces a 430 MiB index on an Apple Silicon laptop; later
 syncs take tens of milliseconds.
 
 **Codex support?**

@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Noise removal: `<system-reminder>`, `<local-command-caveat>` and
   `<local-command-stdout>` blocks are stripped; slash commands become
   `kind=command`; interruptions and caveats become `kind=meta`.
-- SQLite index with an external-content FTS5 trigram table kept in sync by
+- SQLite index with a contentless FTS5 trigram table kept in sync by
   triggers, and a `source` column on every table for future providers.
 - Incremental sync before every query: only appended bytes are parsed; files
   that were rewritten, truncated or indexed with another truncation mode are
@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Tool input is rendered with short values first, so identifying fields such
   as `skill` or `subagent_type` survive truncation of long arguments.
-- Existing indexes are rebuilt automatically (schema version 3).
+- The full-text index is contentless and leaves out tool call arguments and
+  output (about 80% of the text); searches that include those kinds scan
+  them with LIKE. A full build of ~1.4 GB of transcripts drops from about
+  60 s to about 20 s and the index from 720 MiB to 430 MiB.
+- Existing indexes are rebuilt automatically (schema version 4).
 - Grouping by local time uses precomputed zone offsets instead of SQLite's
   `localtime` modifier, which was about 30 times slower.

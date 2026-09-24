@@ -81,7 +81,7 @@ make install        # 或：make build && ./agentory doctor
 ## 快速开始
 
 ```sh
-agentory index                      # 首次建索引（约 1.4 GB 记录大约一分钟）
+agentory index                      # 首次建索引（约 1.4 GB 记录约 20 秒）
 agentory "lock ordering"            # 搜索，等价于 agentory search ...
 agentory show 4213 -C 3             # 查看命中消息及前后各 3 条
 agentory sessions -p shop -s 7d     # 某项目最近 7 天的会话
@@ -234,8 +234,10 @@ recent:
   同步时 `stat` 所有文件，只解析偏移之后的新字节。末尾写了一半的行留到下次再读。
 - 续读前校验偏移前一个字节是换行符、且文件头 4 KiB 没变；文件被原地重写、变小、
   mtime 倒退或截断模式变化时，该文件单独全量重建。
-- `msgs_fts` 是外部内容表模式的 FTS5（`tokenize='trigram'`），由
-  `AFTER INSERT/DELETE/UPDATE` 三个触发器维护一致性。
+- `msgs_fts` 是 contentless 模式的 FTS5（`tokenize='trigram'`），由
+  `AFTER INSERT/DELETE/UPDATE` 三个触发器维护一致性。工具调用的入参和输出约占全部文本的 80%，
+  默认搜索也不查它们，所以不进全文索引：全量建库因此快了约 3 倍、索引小了 40%；
+  `--all` 搜索时对这部分走 `LIKE` 扫描（几百毫秒）。
 - 原始记录被删除后索引里仍保留（agent 会自己清理旧会话）；需要时用
   `agentory index --prune` 清掉。
 - 数据源实现一个很小的接口（`internal/model.Source`）；接入新 agent 只需新增一个包，
@@ -265,7 +267,7 @@ trigram 索引无法匹配少于 3 个字符的词，这些词只能用 `LIKE` �
 
 **索引有多大？**
 在一份真实历史（1025 个 Claude Code 会话文件，共 1.4 GB JSONL）上，Apple Silicon 笔记本
-全量建索引约 60 秒，索引库约 720 MiB；之后的增量同步只需几十毫秒。
+全量建索引约 20 秒，索引库约 430 MiB；之后的增量同步只需几十毫秒。
 
 **支持 Codex 吗？**
 在计划中。存储结构和数据源接口都已就绪，解析器还没写。

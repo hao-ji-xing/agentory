@@ -58,7 +58,8 @@ agentory "panic:" --all --json                     # include tool output / meta 
   `--explain` shows which path each term took.
 - Default kinds are `prompt,reply,think,command,summary`. Tool calls
   (`tool_use`), tool output (`tool_result`), injected text (`meta`) and system
-  events are only searched with `--all` or `-k`.
+  events are only searched with `--all` or `-k`; tool text is scanned rather
+  than full-text indexed, so such searches take a few hundred milliseconds.
 - Sub-agent (sidechain) messages are excluded unless `--include-subagent`.
 - Prompts typed while the agent was busy (queued) are indexed like any other.
 - Results are newest first. `-n` caps the number of hits (default 20).
