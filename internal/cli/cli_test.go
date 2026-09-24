@@ -421,6 +421,8 @@ func (h *harness) writeSkills(now time.Time) {
 		`"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Skill","input":{"skill":"code-review","args":""}}]}`,
 		`"type":"user","message":{"role":"user","content":"<command-name>/code-review</command-name>\n<command-args>high</command-args>"}`,
 		`"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>\n<command-args></command-args>"}`,
+		// Typed while the agent was busy: recorded only as an attachment.
+		`"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"also bump the changelog"}`,
 	} {
 		ts := now.Add(time.Duration(i-10) * time.Minute).UTC().Format(time.RFC3339)
 		fmt.Fprintf(&sb, `{"uuid":"k%d","timestamp":%q,"sessionId":"skills-session","cwd":"/home/bob/api",%s}`+"\n", i, ts, body)
@@ -519,5 +521,71 @@ func TestTopKeyCommand(t *testing.T) {
 	txt = h.ok("top", "--by", "skill", "--color", "never")
 	if !strings.Contains(txt, "code-review") || !strings.Contains(txt, "with args 1/2") {
 		t.Fatalf("top --by skill with_args:\n%s", txt)
+	}
+}
+
+func TestExploreCommands(t *testing.T) {
+	h := newHarness(t)
+	h.writeSkills(time.Now())
+
+	var tok struct {
+		Measure string `json:"measure"`
+		Buckets []struct {
+			Key    string `json:"key"`
+			Tokens struct {
+				Requests  int     `json:"requests"`
+				Output    int64   `json:"output"`
+				CacheRead int64   `json:"cache_read"`
+				HitRate   float64 `json:"cache_hit_rate"`
+			} `json:"tokens"`
+		} `json:"buckets"`
+	}
+	h.json(&tok, "top", "--by", "model", "--measure", "tokens")
+	if tok.Measure != "tokens" || len(tok.Buckets) != 1 || tok.Buckets[0].Key != "claude-opus-5" ||
+		tok.Buckets[0].Tokens.Requests != 2 || tok.Buckets[0].Tokens.Output != 300 || tok.Buckets[0].Tokens.HitRate != 93.7 {
+		t.Fatalf("tokens by model: %+v", tok)
+	}
+	txt := h.ok("top", "--by", "project", "-m", "turns", "--color", "never")
+	if !strings.Contains(txt, "shop") || !strings.Contains(txt, "2m05s") {
+		t.Fatalf("turns by project:\n%s", txt)
+	}
+	txt = h.ok("top", "--by", "session", "-m", "cost", "--color", "never")
+	if !strings.Contains(txt, "$0.01") || !strings.Contains(txt, "Fix invoice discount") {
+		t.Fatalf("cost by session:\n%s", txt)
+	}
+	if _, errOut, code := h.run("top", "--by", "skill", "-m", "tokens"); code != 2 || !strings.Contains(errOut, "does not apply") {
+		t.Fatalf("invalid dimension for measure: %d %s", code, errOut)
+	}
+
+	var u struct {
+		Name     string         `json:"name"`
+		Total    int            `json:"total"`
+		ByActor  map[string]int `json:"by_actor"`
+		WithArgs int            `json:"with_args"`
+	}
+	h.json(&u, "usage", "/code-review")
+	if u.Name != "code-review" || u.Total != 3 || u.ByActor["user"] != 1 || u.ByActor["agent"] != 2 || u.WithArgs != 2 {
+		t.Fatalf("usage code-review: %+v", u)
+	}
+	txt = h.ok("usage", "code-review", "--color", "never")
+	if !strings.Contains(txt, "3 uses (1 typed by you, 2 by the agent)") || !strings.Contains(txt, "(no arguments)") ||
+		!strings.Contains(txt, "high") {
+		t.Fatalf("usage human output:\n%s", txt)
+	}
+
+	var rows []map[string]any
+	h.json(&rows, "sql", "SELECT actor, count(*) AS n FROM invocations GROUP BY actor ORDER BY actor")
+	if len(rows) != 2 || rows[0]["actor"] != "agent" || rows[1]["n"] != float64(3) {
+		t.Fatalf("sql: %+v", rows)
+	}
+	if _, errOut, code := h.run("sql", "DELETE FROM msgs"); code != 1 || !strings.Contains(errOut, "readonly") {
+		t.Fatalf("sql must refuse writes: %d %s", code, errOut)
+	}
+	if out := h.ok("schema"); !strings.Contains(out, "invocations (view over msgs)") {
+		t.Fatalf("schema:\n%s", out)
+	}
+
+	if res := h.search("changelog", "-k", "prompt"); res.Count != 1 {
+		t.Fatal("prompts typed while the agent was busy must be searchable")
 	}
 }

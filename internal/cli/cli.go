@@ -45,7 +45,10 @@ func commands() []command {
 	return []command{
 		{"search", "Search messages (default command)", (*app).search},
 		{"show", "Show a message with context, or a whole session", (*app).show},
-		{"top", "Count matching messages grouped by skill, command, project, day…", (*app).top},
+		{"top", "Aggregate by skill, command, project, model, day… (counts, tokens, turns, cost)", (*app).top},
+		{"usage", "How one command, skill or sub-agent type is used: arguments, outcomes, follow-ups", (*app).usage},
+		{"sql", "Run a read-only SQL query against the index", (*app).sql},
+		{"schema", "Describe the index tables for use with sql", (*app).schema},
 		{"sessions", "List sessions", (*app).sessions},
 		{"projects", "List projects", (*app).projects},
 		{"index", "Build or update the index", (*app).index},
@@ -136,7 +139,7 @@ func (a *app) help(args []string) error {
 	return nil
 }
 
-func (a *app) usage(fs *flagSet, synopsis, desc string) {
+func (a *app) printUsage(fs *flagSet, synopsis, desc string) {
 	fmt.Fprintf(a.stdout, "Usage: %s\n\n%s\n\nFlags:\n%s\n", synopsis, desc, fs.help())
 }
 
@@ -144,7 +147,7 @@ func (a *app) usage(fs *flagSet, synopsis, desc string) {
 func (a *app) parseFlags(fs *flagSet, args []string, synopsis, desc string) ([]string, error) {
 	pos, err := fs.parse(args)
 	if errors.Is(err, flag.ErrHelp) {
-		a.usage(fs, synopsis, desc)
+		a.printUsage(fs, synopsis, desc)
 		return nil, err
 	}
 	if err != nil {
@@ -338,74 +341,6 @@ func (a *app) search(args []string) error {
 	if len(hits) == 0 {
 		fmt.Fprintln(a.stderr, "no matches")
 	}
-	return nil
-}
-
-const topDesc = `Count the messages that match an optional query and the usual filters,
-grouped by a dimension. Dimensions:
-
-  skill        Skill tool invocations, by skill name
-  command      slash commands you typed, by name (/clear, /deploy …)
-  tool         tool calls, by tool name
-  input:<key>  tool calls, by one input field (input:subagent_type …)
-  project      last element of the working directory
-  branch, session, kind, role, source
-  day          local calendar day (oldest first)
-
-For skill and command, each group reports how many uses carried arguments
-(what followed the name); --key restricts the output to one group, e.g.
-
-  agentory top --by command --key /deploy -s 30d
-
-skill, command, tool and input:<key> imply the matching kinds; the others
-use the default kinds unless -k or --all is given. -n limits the number of
-groups (default 20); total and groups in --json count all of them.`
-
-func (a *app) top(args []string) error {
-	var s searchFlags
-	fs := newFlagSet("top")
-	var key string
-	fs.str(&s.by, "b", "by", "", "<dimension>", strings.Join(query.TopDimensions, " | "))
-	fs.str(&key, "", "key", "", "<value>", "only this group, e.g. --by command --key /deploy")
-	s.register(fs, true, false)
-	pos, err := a.parseFlags(fs, args, "agentory top --by <dimension> [query] [flags]", topDesc)
-	if err != nil {
-		return err
-	}
-	if s.by == "" {
-		return errUsage{"missing --by (" + strings.Join(query.TopDimensions, ", ") + ")"}
-	}
-	f, err := a.filter(&s)
-	if err != nil {
-		return err
-	}
-	db, err := a.openIndex(s.noSync, f.Sources)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	res, plan, err := query.Top(db, strings.Join(pos, " "), s.by, f, query.TopOptions{Key: key})
-	if err != nil {
-		if plan == nil {
-			return errUsage{err.Error()}
-		}
-		return err
-	}
-	if s.json {
-		out := struct {
-			*query.TopResult
-			Plan *query.Plan `json:"plan,omitempty"`
-		}{TopResult: res}
-		if s.explain {
-			out.Plan = plan
-		}
-		return a.writeJSON(out)
-	}
-	r := a.renderer(s.color, nil)
-	if s.explain {
-		r.explain(plan, 0)
-	}
-	r.top(res)
 	return nil
 }
 

@@ -191,9 +191,13 @@ func (r *renderer) sessions(ss []query.Session) {
 		if label == "" {
 			label = query.Snippet(s.FirstPrompt, nil, 80)
 		}
-		fmt.Fprintf(r.w, "%s  %s  %-28s %5d msgs  %s\n",
+		cost := ""
+		if s.CostUSD > 0 {
+			cost = fmt.Sprintf("$%.2f", s.CostUSD)
+		}
+		fmt.Fprintf(r.w, "%s  %s  %-28s %5d msgs %8s  %s\n",
 			localTime(s.EndedAt), r.paint(ansiYellow, shortID(s.ID)),
-			r.paint(ansiCyan, truncRunes(location(s.Project, s.Branch), 28)), s.NMsg, label)
+			r.paint(ansiCyan, truncRunes(location(s.Project, s.Branch), 28)), s.NMsg, cost, label)
 	}
 }
 
@@ -202,31 +206,6 @@ func (r *renderer) projects(ps []query.Project) {
 		fmt.Fprintf(r.w, "%-24s %5d sessions %7d msgs  last %s  %s\n",
 			r.paint(ansiCyan, truncRunes(p.Project, 24)), p.Sessions, p.Messages, localTime(p.LastActive), r.paint(ansiDim, p.CWD))
 	}
-}
-
-func (r *renderer) top(res *query.TopResult) {
-	width := 8
-	for _, b := range res.Buckets {
-		width = max(width, len([]rune(b.Key)))
-	}
-	width = min(width, 48)
-	for _, b := range res.Buckets {
-		label := ""
-		if b.Label != "" {
-			label = "  " + r.paint(ansiDim, b.Label)
-		}
-		args := ""
-		if b.WithArgs != nil {
-			args = fmt.Sprintf("  with args %d/%d", *b.WithArgs, b.Count)
-		}
-		fmt.Fprintf(r.w, "%6d  %s  last %s%s%s\n", b.Count,
-			r.paint(ansiCyan, padRunes(truncRunes(b.Key, width), width)), localTime(b.Last), args, label)
-	}
-	more := ""
-	if res.Groups > len(res.Buckets) {
-		more = fmt.Sprintf(", showing %d (use -n for more)", len(res.Buckets))
-	}
-	fmt.Fprintf(r.w, "%d messages in %d groups by %s%s\n", res.Total, res.Groups, res.By, more)
 }
 
 func padRunes(s string, n int) string {
