@@ -176,3 +176,33 @@ func TestTopArgsAndKey(t *testing.T) {
 		t.Fatalf("with_args only for skill/command: %+v", res.Buckets[0])
 	}
 }
+
+func TestZoneOffsetExprMatchesGo(t *testing.T) {
+	db := topFixture(t)
+	for _, name := range []string{"UTC", "Asia/Shanghai", "America/New_York", "Australia/Lord_Howe"} {
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			t.Skipf("zoneinfo unavailable: %v", err)
+		}
+		expr := zoneOffsetExpr(loc, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
+		if name == "Asia/Shanghai" && expr != "28800" {
+			t.Errorf("zone without transitions should be a constant, got %s", expr)
+		}
+		// Instants around DST changes and far apart.
+		for _, ts := range []time.Time{
+			time.Date(2026, 3, 8, 6, 59, 0, 0, time.UTC), time.Date(2026, 3, 8, 7, 1, 0, 0, time.UTC),
+			time.Date(2026, 11, 1, 5, 59, 0, 0, time.UTC), time.Date(2026, 11, 1, 6, 1, 0, 0, time.UTC),
+			time.Date(2026, 4, 5, 14, 30, 0, 0, time.UTC), time.Date(2003, 7, 1, 12, 0, 0, 0, time.UTC),
+			time.Date(2026, 9, 24, 23, 30, 0, 0, time.UTC),
+		} {
+			var got string
+			q := `SELECT strftime('%Y-%m-%d %H:%M', m.ts / 1000 + ` + expr + `, 'unixepoch') FROM (SELECT ? AS ts) m`
+			if err := db.QueryRow(q, ts.UnixMilli()).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if want := ts.In(loc).Format("2006-01-02 15:04"); got != want {
+				t.Errorf("%s at %v: SQL %s, Go %s", name, ts, got, want)
+			}
+		}
+	}
+}

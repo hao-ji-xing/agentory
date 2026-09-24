@@ -157,6 +157,19 @@ func (f *Filter) apply(w *where) {
 		args[i] = string(k)
 	}
 	w.add("m.kind IN "+inList(len(ks)), args...)
+	if f.Role != "" {
+		w.add("m.role = ?", f.Role)
+	}
+	if f.Tool != "" {
+		w.add("m.tool = ? COLLATE NOCASE", f.Tool)
+	}
+	f.applyCommon(w)
+}
+
+// applyCommon adds the conditions every fact table supports: sub-agents,
+// project, time window, branch and source. The table is aliased m and
+// joined to sessions as s.
+func (f *Filter) applyCommon(w *where) {
 	if !f.IncludeSubagent {
 		w.add("m.agent_id = ''")
 	}
@@ -169,12 +182,6 @@ func (f *Filter) apply(w *where) {
 	}
 	if !f.Until.IsZero() {
 		w.add("m.ts < ?", f.Until.UnixMilli())
-	}
-	if f.Role != "" {
-		w.add("m.role = ?", f.Role)
-	}
-	if f.Tool != "" {
-		w.add("m.tool = ? COLLATE NOCASE", f.Tool)
 	}
 	if f.Branch != "" {
 		w.add("m.branch = ?", f.Branch)
@@ -309,9 +316,13 @@ type Session struct {
 	StartedAt   time.Time `json:"started_at"`
 	EndedAt     time.Time `json:"ended_at"`
 	NMsg        int       `json:"n_msg"`
+	CostUSD     float64   `json:"cost_usd,omitempty"` // as reported by the agent
+	LinesAdded  int64     `json:"lines_added,omitempty"`
+	LinesRemove int64     `json:"lines_removed,omitempty"`
 }
 
-const sessionCols = `s.id, s.source, s.project, s.cwd, s.branch, s.title, s.first_prompt, s.started_at, s.ended_at, s.n_msg`
+const sessionCols = `s.id, s.source, s.project, s.cwd, s.branch, s.title, s.first_prompt, s.started_at, s.ended_at, s.n_msg,
+	s.cost_usd, s.lines_added, s.lines_removed`
 
 func collectSessions(rows *sql.Rows, err error) ([]Session, error) {
 	if err != nil {
@@ -322,7 +333,8 @@ func collectSessions(rows *sql.Rows, err error) ([]Session, error) {
 	for rows.Next() {
 		var s Session
 		var st, en int64
-		if err := rows.Scan(&s.ID, &s.Source, &s.ProjectKey, &s.CWD, &s.Branch, &s.Title, &s.FirstPrompt, &st, &en, &s.NMsg); err != nil {
+		if err := rows.Scan(&s.ID, &s.Source, &s.ProjectKey, &s.CWD, &s.Branch, &s.Title, &s.FirstPrompt, &st, &en, &s.NMsg,
+			&s.CostUSD, &s.LinesAdded, &s.LinesRemove); err != nil {
 			return nil, err
 		}
 		s.StartedAt, s.EndedAt = time.UnixMilli(st), time.UnixMilli(en)
