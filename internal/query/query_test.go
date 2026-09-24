@@ -305,3 +305,43 @@ func TestSnippetAndHighlight(t *testing.T) {
 		t.Fatalf("overlapping terms must merge: %q", got)
 	}
 }
+
+func TestSearchToolTextIsScanned(t *testing.T) {
+	db := fixture(t)
+	// "depth" only occurs in a tool_result, which is not full-text indexed.
+	ms, p := search(t, db, "depth", Filter{Kinds: model.AllKinds})
+	if !p.ToolScan || len(ms) != 1 || ms[0].Kind != "tool_result" {
+		t.Fatalf("--all must find tool output by scanning: plan=%+v hits=%q", p, texts(ms))
+	}
+	// Mixed with a short LIKE term and a prompt hit for the same terms.
+	ms, _ = search(t, db, "invoice 发票", Filter{Kinds: model.AllKinds})
+	expect(t, ms, "发票走 invoice queue 异步识别。", "invoice queue depth=3 发票")
+	if _, p := search(t, db, "depth", Filter{}); p.ToolScan {
+		t.Fatal("default kinds must not scan tool text")
+	}
+}
+
+func TestSearchToolScanHonoursFilters(t *testing.T) {
+	db := fixture(t)
+	all := model.AllKinds
+	cases := []struct {
+		f    Filter
+		want int
+	}{
+		{Filter{Kinds: all}, 1},
+		{Filter{Kinds: all, Since: day0.AddDate(0, 0, 1)}, 0}, // the tool_result is from day 0
+		{Filter{Kinds: all, Until: day0.AddDate(0, 0, 1)}, 1},
+		{Filter{Kinds: []model.Kind{model.KindToolUse}}, 0}, // it is a tool_result
+		{Filter{Kinds: all, Tool: "Bash"}, 0},               // tool results carry no tool name
+		{Filter{Kinds: all, Project: "web"}, 0},
+	}
+	for _, c := range cases {
+		ms, p := search(t, db, "depth", c.f)
+		if len(ms) != c.want || !p.ToolScan {
+			t.Errorf("%+v: %d hits (tool scan %v), want %d", c.f, len(ms), p.ToolScan, c.want)
+		}
+	}
+	// Terms and pushed-down filters bind in the right order.
+	ms, _ := search(t, db, "invoice depth", Filter{Kinds: all, Since: day0.AddDate(0, 0, -1), Until: day0.AddDate(0, 0, 1)})
+	expect(t, ms, "invoice queue depth=3 发票")
+}

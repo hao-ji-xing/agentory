@@ -224,7 +224,11 @@ func (r *renderer) explain(p *query.Plan, elapsed time.Duration) {
 		}
 		parts = append(parts, fmt.Sprintf("%q→%s", t.Text, how))
 	}
-	fmt.Fprintf(r.w, "plan: mode=%s  terms: %s\n", p.Mode, strings.Join(parts, ", "))
+	scan := ""
+	if p.ToolScan {
+		scan = " (+ LIKE scan of tool_use/tool_result, which are not full-text indexed)"
+	}
+	fmt.Fprintf(r.w, "plan: mode=%s%s  terms: %s\n", p.Mode, scan, strings.Join(parts, ", "))
 	if p.Match != "" {
 		fmt.Fprintf(r.w, "match: %s\n", p.Match)
 	}

@@ -7,7 +7,10 @@ package index
 const SchemaDoc = `agentory index schema (SQLite; timestamps are Unix milliseconds, UTC;
 local time: datetime(ts/1000, 'unixepoch', 'localtime'))
 
-msgs — one searchable message; full-text index msgs_fts(text) (trigram)
+msgs — one searchable message
+  full-text: id IN (SELECT rowid FROM msgs_fts WHERE msgs_fts MATCH '"term"')
+  (trigram, terms of 3+ characters; tool_use/tool_result rows are not in
+  msgs_fts — use text LIKE '%term%' for them)
   id            message id (as printed by search / show)
   file_id       transcript file (files.id); seq orders messages within it
   seq           position within the file

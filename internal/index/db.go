@@ -22,7 +22,17 @@ import (
 //	2: tool_use input renders short values first
 //	3: model, request, tool linkage, invocation and prompt-source columns;
 //	   requests and turns tables; session cost; queued prompts
-const SchemaVersion = 3
+//	4: contentless full-text index without tool_use / tool_result text
+const SchemaVersion = 4
+
+// Tool call arguments and output are ~80% of all text but are not searched
+// by default. Keeping them out of the full-text index makes a full build
+// several times faster and the index 40% smaller; searches that include
+// these kinds scan them with LIKE instead (a few hundred ms).
+const unindexedKinds = `('tool_use', 'tool_result')`
+
+// FullTextKind reports whether messages of kind k are in the full-text index.
+func FullTextKind(k string) bool { return k != "tool_use" && k != "tool_result" }
 
 // Truncation limits for tool_use / tool_result text, in characters.
 const (
@@ -197,17 +207,19 @@ CREATE VIEW IF NOT EXISTS invocations AS
   FROM msgs WHERE inv_kind <> '';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS msgs_fts USING fts5(
-  text, content='msgs', content_rowid='id', tokenize='trigram'
+  text, content='', contentless_delete=1, tokenize='trigram'
 );
-CREATE TRIGGER IF NOT EXISTS msgs_ai AFTER INSERT ON msgs BEGIN
+CREATE TRIGGER IF NOT EXISTS msgs_ai AFTER INSERT ON msgs
+  WHEN new.kind NOT IN ` + unindexedKinds + ` BEGIN
   INSERT INTO msgs_fts(rowid, text) VALUES (new.id, new.text);
 END;
-CREATE TRIGGER IF NOT EXISTS msgs_ad AFTER DELETE ON msgs BEGIN
-  INSERT INTO msgs_fts(msgs_fts, rowid, text) VALUES ('delete', old.id, old.text);
+CREATE TRIGGER IF NOT EXISTS msgs_ad AFTER DELETE ON msgs
+  WHEN old.kind NOT IN ` + unindexedKinds + ` BEGIN
+  DELETE FROM msgs_fts WHERE rowid = old.id;
 END;
 CREATE TRIGGER IF NOT EXISTS msgs_au AFTER UPDATE ON msgs BEGIN
-  INSERT INTO msgs_fts(msgs_fts, rowid, text) VALUES ('delete', old.id, old.text);
-  INSERT INTO msgs_fts(rowid, text) VALUES (new.id, new.text);
+  DELETE FROM msgs_fts WHERE rowid = old.id;
+  INSERT INTO msgs_fts(rowid, text) SELECT new.id, new.text WHERE new.kind NOT IN ` + unindexedKinds + `;
 END;
 `
 
@@ -295,12 +307,24 @@ func (db *DB) SetFullMode(full bool) error {
 	return db.SetMeta("full", v)
 }
 
-// CheckFTS runs the FTS5 integrity check, which verifies that the full-text
-// index matches the content table row for row.
+// CheckFTS verifies the full-text index: FTS5's own integrity check, then
+// that it holds exactly the rows of msgs that should be indexed (catching
+// stale or missing entries, e.g. after rowid reuse).
 func (db *DB) CheckFTS() error {
-	_, err := db.Exec(`INSERT INTO msgs_fts(msgs_fts, rank) VALUES('integrity-check', 1)`)
+	if _, err := db.Exec(`INSERT INTO msgs_fts(msgs_fts) VALUES('integrity-check')`); err != nil {
+		return errors.New("full-text index is corrupt: " + err.Error())
+	}
+	var stale, missing int
+	err := db.QueryRow(`SELECT
+		(SELECT count(*) FROM msgs_fts_docsize d LEFT JOIN msgs m ON m.id = d.id
+		 WHERE m.id IS NULL OR m.kind IN `+unindexedKinds+`),
+		(SELECT count(*) FROM msgs m LEFT JOIN msgs_fts_docsize d ON d.id = m.id
+		 WHERE d.id IS NULL AND m.kind NOT IN `+unindexedKinds+`)`).Scan(&stale, &missing)
 	if err != nil {
-		return errors.New("full-text index is inconsistent with msgs: " + err.Error())
+		return err
+	}
+	if stale > 0 || missing > 0 {
+		return fmt.Errorf("full-text index is inconsistent with msgs: %d stale, %d missing entries", stale, missing)
 	}
 	return nil
 }

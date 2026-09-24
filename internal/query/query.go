@@ -39,9 +39,12 @@ type Term struct {
 type Plan struct {
 	Terms []Term `json:"terms"`
 	Mode  string `json:"mode"` // fts | like | fts+like | scan
-	Match string `json:"match,omitempty"`
-	SQL   string `json:"sql"`
-	Args  []any  `json:"args"`
+	// ToolScan: tool_use/tool_result rows, which are not in the full-text
+	// index, are matched with LIKE for the FTS terms.
+	ToolScan bool   `json:"tool_scan,omitempty"`
+	Match    string `json:"match,omitempty"`
+	SQL      string `json:"sql"`
+	Args     []any  `json:"args"`
 }
 
 // Message is a stored message plus its session context.
@@ -223,7 +226,55 @@ func plan(q string, f Filter) (*Plan, *where) {
 	}
 	if len(phrases) > 0 {
 		p.Match = strings.Join(phrases, " AND ")
-		w.add("m.id IN (SELECT rowid FROM msgs_fts WHERE msgs_fts MATCH ?)", p.Match)
+		fts := "m.id IN (SELECT rowid FROM msgs_fts WHERE msgs_fts MATCH ?)"
+		args := []any{p.Match}
+		// Tool text is not in the full-text index: scan it for the same terms.
+		for _, k := range f.kinds() {
+			if !index.FullTextKind(string(k)) {
+				p.ToolScan = true
+			}
+		}
+		if p.ToolScan {
+			var likes []string
+			for _, t := range p.Terms {
+				if t.FTS {
+					likes = append(likes, `t.text LIKE ? ESCAPE '\'`)
+					args = append(args, likePattern(t.Text))
+				}
+			}
+			// A separate subquery scans tool rows in table order (inlined into
+			// the OR it would read them in time order, ~5x slower for rare
+			// terms); the filters that tool rows can be narrowed by are
+			// pushed into it.
+			var toolKinds []string
+			for _, k := range f.kinds() {
+				if !index.FullTextKind(string(k)) {
+					toolKinds = append(toolKinds, "'"+string(k)+"'")
+				}
+			}
+			conds := []string{"t.kind IN (" + strings.Join(toolKinds, ", ") + ")"}
+			var pushed []any
+			if f.Tool != "" {
+				conds = append(conds, "t.tool = ? COLLATE NOCASE")
+				pushed = append(pushed, f.Tool)
+			}
+			if !f.Since.IsZero() {
+				conds = append(conds, "t.ts >= ?")
+				pushed = append(pushed, f.Since.UnixMilli())
+			}
+			if !f.Until.IsZero() {
+				conds = append(conds, "t.ts < ?")
+				pushed = append(pushed, f.Until.UnixMilli())
+			}
+			if !f.IncludeSubagent {
+				conds = append(conds, "t.agent_id = ''")
+			}
+			likeArgs := args[1:]
+			args = append(append(args[:1:1], pushed...), likeArgs...)
+			fts = "(" + fts + " OR m.id IN (SELECT t.id FROM msgs t WHERE " + strings.Join(conds, " AND ") + " AND " +
+				strings.Join(likes, " AND ") + "))"
+		}
+		w.add(fts, args...)
 	}
 	for _, t := range p.Terms {
 		if !t.FTS {

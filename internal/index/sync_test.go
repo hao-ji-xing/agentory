@@ -612,3 +612,39 @@ func TestSchemaDocCoversEveryColumn(t *testing.T) {
 		}
 	}
 }
+
+func TestFullTextIndexExcludesToolTextAndStaysConsistent(t *testing.T) {
+	e := newEnv(t)
+	e.write("s1.jsonl", userLine("s1", 1, "prompt about walrus")+toolResultLine("s1", 2, "tool output about walrus"))
+	e.sync()
+	if n := e.ftsHits("walrus"); n != 1 {
+		t.Fatalf("only the prompt belongs in the full-text index, got %d hits", n)
+	}
+	if err := e.db.CheckFTS(); err != nil {
+		t.Fatal(err)
+	}
+	// Rebuilding a file that contains tool rows must not disturb the index.
+	e.write("s1.jsonl", toolResultLine("s1", 1, "new tool output")+userLine("s1", 2, "second prompt narwhal"))
+	bumpMtime(t, e.path("s1.jsonl"))
+	e.sync()
+	if e.ftsHits("walrus") != 0 || e.ftsHits("narwhal") != 1 {
+		t.Fatal("stale or missing full-text entries after rebuild")
+	}
+	if err := e.db.CheckFTS(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The check notices both kinds of drift.
+	var promptID, toolID int64
+	e.db.QueryRow(`SELECT id FROM msgs WHERE kind='prompt'`).Scan(&promptID)
+	e.db.QueryRow(`SELECT id FROM msgs WHERE kind='tool_result'`).Scan(&toolID)
+	e.db.Exec(`DELETE FROM msgs_fts WHERE rowid=?`, promptID)
+	if err := e.db.CheckFTS(); err == nil || !strings.Contains(err.Error(), "1 missing") {
+		t.Fatalf("missing entry not detected: %v", err)
+	}
+	e.db.Exec(`INSERT INTO msgs_fts(rowid, text) VALUES(?, 'second prompt narwhal')`, promptID)
+	e.db.Exec(`INSERT INTO msgs_fts(rowid, text) VALUES(?, 'tool text')`, toolID)
+	if err := e.db.CheckFTS(); err == nil || !strings.Contains(err.Error(), "1 stale") {
+		t.Fatalf("stale entry not detected: %v", err)
+	}
+}
