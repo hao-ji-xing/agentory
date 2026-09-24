@@ -245,3 +245,12 @@ func TestMatchAndProject(t *testing.T) {
 		t.Errorf("ProjectOf = %q", got)
 	}
 }
+
+func TestRenderInputShortValuesFirst(t *testing.T) {
+	long := strings.Repeat("a", 5000)
+	got := RenderInput([]byte(`{"args":"` + long + `","skill":"ic-commit","b":2}`))
+	want := "b=2\nskill=ic-commit\nargs=" + long
+	if got != want {
+		t.Fatalf("identifying fields must precede long values, got prefix %q", got[:40])
+	}
+}

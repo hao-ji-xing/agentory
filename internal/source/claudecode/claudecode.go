@@ -295,8 +295,14 @@ func renderToolResult(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-// RenderInput turns tool_use input into sorted "key=value" lines so that
-// argument values are searchable as plain text.
+// shortValue is the longest value rendered in the leading group of
+// RenderInput.
+const shortValue = 200
+
+// RenderInput turns tool_use input into "key=value" lines so that argument
+// values are searchable as plain text. Short values come first (then long
+// ones), each group sorted by key: when the text is truncated for storage,
+// identifying fields such as skill or subagent_type survive a long prompt.
 func RenderInput(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -305,24 +311,30 @@ func RenderInput(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &obj) != nil {
 		return strings.TrimSpace(string(raw))
 	}
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
+	type kv struct{ k, v string }
+	pairs := make([]kv, 0, len(obj))
+	for k, raw := range obj {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			s = string(raw)
+		}
+		pairs = append(pairs, kv{k, s})
 	}
-	sort.Strings(keys)
+	sort.Slice(pairs, func(i, j int) bool {
+		si, sj := len(pairs[i].v) <= shortValue, len(pairs[j].v) <= shortValue
+		if si != sj {
+			return si
+		}
+		return pairs[i].k < pairs[j].k
+	})
 	var sb strings.Builder
-	for i, k := range keys {
+	for i, p := range pairs {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		sb.WriteString(k)
+		sb.WriteString(p.k)
 		sb.WriteByte('=')
-		var s string
-		if json.Unmarshal(obj[k], &s) == nil {
-			sb.WriteString(s)
-		} else {
-			sb.Write(obj[k])
-		}
+		sb.WriteString(p.v)
 	}
 	return sb.String()
 }

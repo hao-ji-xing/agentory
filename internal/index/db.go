@@ -15,9 +15,12 @@ import (
 	_ "modernc.org/sqlite" // pure-Go driver, no cgo
 )
 
-// SchemaVersion is bumped whenever the schema changes incompatibly; an
-// index with a different version is dropped and rebuilt from scratch.
-const SchemaVersion = 1
+// SchemaVersion is bumped whenever the schema or the parsed output of a
+// source changes; an index with a different version is dropped and rebuilt
+// from scratch.
+//
+//	2: tool_use input renders short values first
+const SchemaVersion = 2
 
 // Truncation limits for tool_use / tool_result text, in characters.
 const (
