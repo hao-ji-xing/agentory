@@ -152,3 +152,21 @@ type Source interface {
 	// yields the same result regardless of what came before it.
 	ParseLine(line []byte) (Parsed, error)
 }
+
+// FileSource is implemented by sources whose lines only make sense together
+// with earlier lines of the same file. Codex, for example, writes the session
+// id and working directory once at the top and the model once per turn. The
+// indexer then parses a file through a FileParser instead of ParseLine.
+type FileSource interface {
+	Source
+	// OpenFile returns a parser for one file. Parsing starts at byte
+	// resumeAt, which is past the lines indexed earlier; the parser may read
+	// those leading bytes to recover the state they established.
+	OpenFile(path string, resumeAt int64) (FileParser, error)
+}
+
+// FileParser parses the lines of one file in order. It is used by a single
+// goroutine.
+type FileParser interface {
+	ParseLine(line []byte) (Parsed, error)
+}

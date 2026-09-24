@@ -47,16 +47,19 @@ type Stats struct {
 	Appended  int // resumed from byte_off
 	Rebuilt   int // re-indexed from scratch
 	Pruned    int
+	Moved     int // indexed files found under a new path
 	Messages  int // messages written
 	BadLines  int // lines that failed to parse
 	Duration  time.Duration
 }
 
 // Changed reports whether the run touched the index.
-func (s Stats) Changed() bool { return s.New+s.Appended+s.Rebuilt+s.Pruned > 0 }
+func (s Stats) Changed() bool { return s.New+s.Appended+s.Rebuilt+s.Pruned+s.Moved > 0 }
 
 type fileRow struct {
 	id      int64
+	source  string
+	path    string
 	size    int64
 	mtime   int64
 	byteOff int64
@@ -107,7 +110,7 @@ func (db *DB) Sync(ctx context.Context, sources []model.Source, opt Options) (St
 		return st, err
 	}
 
-	var jobs []*job
+	var found []*job
 	seen := map[string]bool{}
 	for _, src := range sources {
 		files, err := discover(src)
@@ -116,16 +119,23 @@ func (db *DB) Sync(ctx context.Context, sources []model.Source, opt Options) (St
 		}
 		for _, f := range files {
 			seen[f.path] = true
-			st.Files++
 			f.src = src
-			f.action, f.reason = decide(known[f.path], f.size, f.mtime, full)
-			f.prev = known[f.path]
-			if f.action == actSkip {
-				st.Unchanged++
-				continue
-			}
-			jobs = append(jobs, f)
+			found = append(found, f)
 		}
+	}
+	if st.Moved, err = db.adoptMoved(found, known, seen); err != nil {
+		return st, err
+	}
+	var jobs []*job
+	for _, f := range found {
+		st.Files++
+		f.action, f.reason = decide(known[f.path], f.size, f.mtime, full)
+		f.prev = known[f.path]
+		if f.action == actSkip {
+			st.Unchanged++
+			continue
+		}
+		jobs = append(jobs, f)
 	}
 	// Big files first keeps all workers busy until the end.
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].size > jobs[j].size })
@@ -328,7 +338,7 @@ func discover(src model.Source) ([]*job, error) {
 }
 
 func (db *DB) loadFiles() (map[string]*fileRow, error) {
-	rows, err := db.Query(`SELECT id, path, size, mtime, byte_off, n_msg, full, head_crc FROM files`)
+	rows, err := db.Query(`SELECT id, source, path, size, mtime, byte_off, n_msg, full, head_crc FROM files`)
 	if err != nil {
 		return nil, err
 	}
@@ -336,15 +346,57 @@ func (db *DB) loadFiles() (map[string]*fileRow, error) {
 	out := map[string]*fileRow{}
 	for rows.Next() {
 		var r fileRow
-		var path string
 		var crc int64
-		if err := rows.Scan(&r.id, &path, &r.size, &r.mtime, &r.byteOff, &r.nMsg, &r.full, &crc); err != nil {
+		if err := rows.Scan(&r.id, &r.source, &r.path, &r.size, &r.mtime, &r.byteOff, &r.nMsg, &r.full, &crc); err != nil {
 			return nil, err
 		}
 		r.headCRC = uint32(crc)
-		out[path] = &r
+		out[r.path] = &r
 	}
 	return out, rows.Err()
+}
+
+// adoptMoved recognizes indexed files that an agent moved rather than
+// created: Codex, for one, moves a transcript from sessions/ to
+// archived_sessions/ when a conversation is archived. A new path is taken
+// to be a move when an indexed file of the same source has the same file
+// name and its old path no longer exists. The row is renamed in place, so
+// the transcript is not indexed twice, and known is updated to match. The
+// usual size, mtime and head checks then decide whether anything is new.
+func (db *DB) adoptMoved(found []*job, known map[string]*fileRow, seen map[string]bool) (int, error) {
+	type key struct{ source, base string }
+	gone := map[key][]*fileRow{}
+	for path, row := range known {
+		if !seen[path] {
+			k := key{row.source, filepath.Base(path)}
+			gone[k] = append(gone[k], row)
+		}
+	}
+	if len(gone) == 0 {
+		return 0, nil
+	}
+	moved := 0
+	for _, f := range found {
+		if known[f.path] != nil {
+			continue
+		}
+		k := key{f.src.Name(), filepath.Base(f.path)}
+		for i, row := range gone[k] {
+			if _, err := os.Stat(row.path); !errors.Is(err, fs.ErrNotExist) {
+				continue // still there (or unreadable): a copy, not a move
+			}
+			if _, err := db.Exec(`UPDATE files SET path=? WHERE id=?`, f.path, row.id); err != nil {
+				return moved, err
+			}
+			delete(known, row.path)
+			row.path = f.path
+			known[f.path] = row
+			gone[k] = append(gone[k][:i], gone[k][i+1:]...)
+			moved++
+			break
+		}
+	}
+	return moved, nil
 }
 
 // parseFile reads the file from the resume point (or from the start) and
@@ -374,6 +426,15 @@ func parseFile(j *job) *result {
 			j.action, j.reason = actRebuild, "rewritten in place (resume point invalid)"
 		}
 	}
+	parse := j.src.ParseLine
+	if fsrc, ok := j.src.(model.FileSource); ok {
+		fp, err := fsrc.OpenFile(j.path, off)
+		if err != nil {
+			r.err = err
+			return r
+		}
+		parse = fp.ParseLine
+	}
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
 		r.err = err
 		return r
@@ -390,7 +451,7 @@ func parseFile(j *job) *result {
 			return r
 		}
 		off += int64(len(line))
-		p, perr := j.src.ParseLine(line)
+		p, perr := parse(line)
 		if perr != nil {
 			r.bad++
 			continue
