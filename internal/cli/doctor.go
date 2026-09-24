@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/hao-ji-xing/agentory/internal/index"
+	"github.com/hao-ji-xing/agentory/internal/model"
 	"github.com/hao-ji-xing/agentory/internal/source"
 )
 
@@ -32,6 +34,9 @@ func (a *app) doctor(args []string) error {
 		for _, root := range src.Roots() {
 			n, err := countFiles(root, src.Match)
 			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				// An agent that is not installed is not a problem.
+				fmt.Fprintf(a.stdout, "[skip] %-18s %s (not found)\n", src.Name()+" root", root)
 			case err != nil:
 				report(false, src.Name()+" root", fmt.Sprintf("%s: %v", root, err))
 			default:
@@ -154,6 +159,13 @@ func (a *app) watch(args []string) error {
 	}
 	defer w.Close()
 	addTree := func(root string) {
+		if fi, err := os.Stat(root); err == nil && !fi.IsDir() {
+			root = filepath.Dir(root) // a file root: watch its directory
+			if err := w.Add(root); err != nil {
+				fmt.Fprintf(a.stderr, "cannot watch %s: %v\n", root, err)
+			}
+			return
+		}
 		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err == nil && d.IsDir() {
 				if err := w.Add(p); err != nil {
@@ -175,8 +187,8 @@ func (a *app) watch(args []string) error {
 		case err != nil && a.ctx.Err() == nil:
 			fmt.Fprintf(a.stderr, "%s sync error: %v\n", time.Now().Format("15:04:05"), err)
 		case err == nil && st.Changed():
-			fmt.Fprintf(a.stdout, "%s +%d messages (%d new, %d appended, %d rebuilt files)\n",
-				time.Now().Format("15:04:05"), st.Messages, st.New, st.Appended, st.Rebuilt)
+			fmt.Fprintf(a.stdout, "%s +%d messages (%d new, %d appended, %d rebuilt, %d moved files)\n",
+				time.Now().Format("15:04:05"), st.Messages, st.New, st.Appended, st.Rebuilt, st.Moved)
 		}
 	}
 	sync()
@@ -192,10 +204,17 @@ func (a *app) watch(args []string) error {
 			if !ok {
 				return nil
 			}
+			isDir := false
 			if ev.Has(fsnotify.Create) {
 				if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
+					isDir = true
 					addTree(ev.Name)
 				}
+			}
+			// A watched directory may hold unrelated files (the Codex home
+			// directory holds its own databases and logs).
+			if !isDir && !matchesAny(srcs, ev.Name) {
+				continue
 			}
 			timer.Reset(time.Duration(debounce) * time.Millisecond)
 		case err, ok := <-w.Errors:
@@ -207,4 +226,14 @@ func (a *app) watch(args []string) error {
 			sync()
 		}
 	}
+}
+
+// matchesAny reports whether path is a history file of one of the sources.
+func matchesAny(srcs []model.Source, path string) bool {
+	for _, s := range srcs {
+		if s.Match(path) {
+			return true
+		}
+	}
+	return false
 }

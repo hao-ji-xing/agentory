@@ -549,7 +549,7 @@ func (a *app) index(args []string) error {
 	if jsonOut {
 		return a.writeJSON(map[string]any{
 			"files": st.Files, "unchanged": st.Unchanged, "new": st.New, "appended": st.Appended,
-			"rebuilt": st.Rebuilt, "pruned": st.Pruned, "messages": st.Messages, "bad_lines": st.BadLines,
+			"rebuilt": st.Rebuilt, "pruned": st.Pruned, "moved": st.Moved, "messages": st.Messages, "bad_lines": st.BadLines,
 			"seconds": st.Duration.Seconds(), "db_path": db.Path, "db_bytes": size, "full": db.FullMode(),
 		})
 	}
@@ -557,6 +557,9 @@ func (a *app) index(args []string) error {
 		fmt.Fprintf(a.stdout, "%d files: %d new, %d appended, %d rebuilt, %d unchanged", st.Files, st.New, st.Appended, st.Rebuilt, st.Unchanged)
 		if st.Pruned > 0 {
 			fmt.Fprintf(a.stdout, ", %d pruned", st.Pruned)
+		}
+		if st.Moved > 0 {
+			fmt.Fprintf(a.stdout, ", %d moved", st.Moved)
 		}
 		fmt.Fprintf(a.stdout, "\n%d messages indexed in %s", st.Messages, st.Duration.Round(time.Millisecond))
 		if st.BadLines > 0 {

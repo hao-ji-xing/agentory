@@ -10,12 +10,13 @@ import (
 
 	"github.com/hao-ji-xing/agentory/internal/model"
 	"github.com/hao-ji-xing/agentory/internal/source/claudecode"
+	"github.com/hao-ji-xing/agentory/internal/source/codex"
 )
 
 // builtin lists the constructors of every shipped source.
 var builtin = []func() model.Source{
 	func() model.Source { return claudecode.New() },
-	// codex.New — not implemented yet.
+	func() model.Source { return codex.New() },
 }
 
 // All returns a fresh instance of every registered source.

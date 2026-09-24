@@ -29,9 +29,20 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", claude)
+	// Never index the real ~/.codex; withCodex copies the Codex fixture.
+	t.Setenv("CODEX_HOME", filepath.Join(dir, "codex"))
 	t.Setenv("AGENTORY_DB", filepath.Join(dir, "index.db"))
 	t.Setenv("NO_COLOR", "")
 	return &harness{t: t, root: filepath.Join(claude, "projects")}
+}
+
+// withCodex adds the synthetic Codex home to the harness.
+func (h *harness) withCodex() *harness {
+	h.t.Helper()
+	if err := os.CopyFS(os.Getenv("CODEX_HOME"), os.DirFS(filepath.Join("..", "..", "testdata", "codex"))); err != nil {
+		h.t.Fatal(err)
+	}
+	return h
 }
 
 func (h *harness) run(args ...string) (stdout, stderr string, code int) {
@@ -369,7 +380,7 @@ func TestErrors(t *testing.T) {
 		{[]string{"search"}, 2, "missing query"},
 		{[]string{"x", "-k", "bogus"}, 2, "unknown kind"},
 		{[]string{"x", "--since", "someday"}, 2, "cannot parse time"},
-		{[]string{"x", "--source", "codex"}, 2, "unknown source"},
+		{[]string{"x", "--source", "cursor"}, 2, "unknown source"},
 		{[]string{"show", "999999"}, 1, "no message"},
 		{[]string{"show", "nosuchsession"}, 1, "no session"},
 		{[]string{"x", "--bogus-flag"}, 2, "flag provided but not defined"},
@@ -587,5 +598,84 @@ func TestExploreCommands(t *testing.T) {
 
 	if res := h.search("changelog", "-k", "prompt"); res.Count != 1 {
 		t.Fatal("prompts typed while the agent was busy must be searchable")
+	}
+}
+
+func TestCodexEndToEnd(t *testing.T) {
+	h := newHarness(t).withCodex()
+	const s1 = "0192f0c1-0000-7000-8000-000000000001"
+
+	// A Codex prompt is found, with the title from session_index.jsonl.
+	hits := h.search("total drift after", "-k", "prompt")
+	if hits.Count != 1 || hits.Hits[0].SessionID != s1 || hits.Hits[0].Title != "Fix zebraledger refund drift" {
+		t.Fatalf("codex prompt hit: %+v", hits)
+	}
+	if hits.Hits[0].Branch != "feat-ledger" {
+		t.Errorf("branch = %q", hits.Hits[0].Branch)
+	}
+
+	// Injected context and the duplicate UI events are not indexed.
+	if n := h.search("injectedagentsterm", "--all").Count; n != 0 {
+		t.Errorf("injected AGENTS.md context indexed %d times", n)
+	}
+	if n := h.search("no longer drifts", "-k", "reply").Count; n != 1 {
+		t.Errorf("final reply indexed %d times, want 1", n)
+	}
+
+	// --source and -p select Codex sessions like Claude ones.
+	if n := h.search("zebraledger", "--source", "claude").Count; n != 0 {
+		t.Errorf("--source claude returned %d codex hits", n)
+	}
+	if n := h.search("quokkacart", "-p", "shop", "--source", "codex").Count; n == 0 {
+		t.Error("-p shop found no codex hits")
+	}
+
+	// The guardian sub-agent belongs to its parent and is hidden by default.
+	if n := h.search("wombatguard").Count; n != 0 {
+		t.Errorf("sub-agent hits without --include-subagent: %d", n)
+	}
+	sub := h.search("wombatguard", "--include-subagent")
+	if sub.Count == 0 || sub.Hits[0].SessionID != s1 || sub.Hits[0].AgentID == "" {
+		t.Errorf("sub-agent hits: %+v", sub)
+	}
+
+	// Skill use: the user's [$lark-cli] mention and the agent reading SKILL.md.
+	var top struct {
+		Buckets []struct {
+			Keys  []string `json:"keys"`
+			Count int      `json:"count"`
+		} `json:"buckets"`
+	}
+	h.json(&top, "top", "--by", "name,actor", "--source", "codex")
+	got := map[string]int{}
+	for _, b := range top.Buckets {
+		got[strings.Join(b.Keys, "/")] = b.Count
+	}
+	if got["lark-cli/user"] != 1 || got["lark-cli/agent"] != 1 {
+		t.Errorf("codex invocations = %v", got)
+	}
+
+	// Token usage: cached input is split out, repeated counts are merged.
+	var tok struct {
+		All struct {
+			Tokens struct {
+				Requests  int64 `json:"requests"`
+				Input     int64 `json:"input"`
+				CacheRead int64 `json:"cache_read"`
+			} `json:"tokens"`
+		} `json:"all"`
+	}
+	h.json(&tok, "top", "--by", "model", "--measure", "tokens", "--source", "codex")
+	if tok.All.Tokens.Requests != 3 || tok.All.Tokens.Input != 400+300+4000 || tok.All.Tokens.CacheRead != 600+1200+1000 {
+		t.Errorf("codex tokens = %+v", tok.All.Tokens)
+	}
+
+	// An interruption counts for usage like Claude's marker does.
+	var use struct {
+		Interrupted int `json:"interrupted"`
+	}
+	h.json(&use, "usage", "lark-cli")
+	if use.Interrupted != 1 {
+		t.Errorf("interrupted = %d, want 1", use.Interrupted)
 	}
 }
