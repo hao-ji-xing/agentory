@@ -52,3 +52,23 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o /tmp/agentory-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+  release-check:
+    name: release archives and install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: shellcheck
+        run: shellcheck install.sh scripts/test-install.sh
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: install.sh installs the snapshot
+        run: sh scripts/test-install.sh

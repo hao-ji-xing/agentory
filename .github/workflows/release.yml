@@ -21,6 +21,13 @@ jobs:
         run: go test ./...
         env:
           CGO_ENABLED: "0"
+      - name: check archives and install.sh
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+      - run: sh scripts/test-install.sh
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser

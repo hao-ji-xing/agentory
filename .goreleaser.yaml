@@ -24,7 +24,7 @@ archives:
       - README.md
       - README.zh-CN.md
       - CHANGELOG.md
-      - skills/agentory/SKILL.md
+      - skills/agentory/*
 
 checksum:
   name_template: checksums.txt
