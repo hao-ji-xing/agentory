@@ -54,6 +54,64 @@ type Message struct {
 	CWD        string
 	Branch     string
 	Text       string
+
+	Model        string // model that produced an assistant message
+	RequestID    string // API request an assistant message belongs to
+	ToolUseID    string // links a tool_use to its tool_result
+	IsError      bool   // tool_result reported an error
+	PromptSource string // how a prompt was entered (typed, queued, …)
+	FilePath     string // file a tool call operates on
+
+	// Invocation fields are set on messages that invoke something by name:
+	// a slash command the user typed, a skill or a sub-agent the model
+	// started.
+	InvKind string // "command", "skill" or "subagent"
+	InvName string // without a leading "/"
+	InvArgs string // what followed the name
+}
+
+// Invocation kinds.
+const (
+	InvCommand  = "command"
+	InvSkill    = "skill"
+	InvSubagent = "subagent"
+)
+
+// Usage is the token accounting of one API request. A request may be
+// spread over several raw lines; the one with the most output wins.
+type Usage struct {
+	RequestID    string
+	SessionID    string
+	AgentID      string
+	Model        string
+	CWD          string
+	Branch       string
+	Time         time.Time
+	Input        int64 // uncached input tokens
+	Output       int64
+	CacheRead    int64
+	CacheWrite5m int64
+	CacheWrite1h int64
+	Thinking     int64 // part of Output, when reported
+}
+
+// Turn is one completed agent turn (user input to final answer).
+type Turn struct {
+	SessionID  string
+	AgentID    string
+	CWD        string
+	Branch     string
+	Time       time.Time
+	DurationMs int64
+	Messages   int64
+}
+
+// SessionCost is the cumulative accounting an agent reports for a session.
+type SessionCost struct {
+	USD          float64
+	LinesAdded   int64
+	LinesRemoved int64
+	DurationMs   int64
 }
 
 // Title priorities: a higher rank wins over a lower one; equal ranks let
@@ -66,10 +124,17 @@ const (
 // SessionMeta carries session-level facts that are not messages.
 type SessionMeta struct {
 	SessionID string
-	Title     string
+	Title     string // empty when the record carries no title
 	TitleRank int
-	CWD       string
-	Branch    string
+	Cost      *SessionCost // latest cumulative cost, when reported
+}
+
+// Parsed is everything one raw line contributes to the index.
+type Parsed struct {
+	Messages []Message
+	Meta     *SessionMeta
+	Usage    *Usage
+	Turn     *Turn
 }
 
 // Source is a pluggable conversation-history provider (Claude Code, Codex…).
@@ -85,5 +150,5 @@ type Source interface {
 	ProjectOf(path string) string
 	// ParseLine parses one raw line. It is stateless: the same line always
 	// yields the same result regardless of what came before it.
-	ParseLine(line []byte) ([]Message, *SessionMeta, error)
+	ParseLine(line []byte) (Parsed, error)
 }

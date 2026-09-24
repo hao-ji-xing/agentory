@@ -88,6 +88,8 @@ type result struct {
 	job     *job
 	msgs    []model.Message
 	metas   []model.SessionMeta
+	usages  []model.Usage
+	turns   []model.Turn
 	endOff  int64
 	headCRC uint32
 	bad     int
@@ -388,16 +390,20 @@ func parseFile(j *job) *result {
 			return r
 		}
 		off += int64(len(line))
-		msgs, meta, perr := j.src.ParseLine(line)
+		p, perr := j.src.ParseLine(line)
 		if perr != nil {
 			r.bad++
 			continue
 		}
-		for i := range msgs {
-			r.msgs = append(r.msgs, msgs[i])
+		r.msgs = append(r.msgs, p.Messages...)
+		if p.Meta != nil {
+			r.metas = append(r.metas, *p.Meta)
 		}
-		if meta != nil {
-			r.metas = append(r.metas, *meta)
+		if p.Usage != nil {
+			r.usages = append(r.usages, *p.Usage)
+		}
+		if p.Turn != nil {
+			r.turns = append(r.turns, *p.Turn)
 		}
 	}
 	r.endOff = off
@@ -457,7 +463,8 @@ func truncates(k model.Kind) bool {
 }
 
 const stageCols = `file_id, source, session_id, agent_id, slug, uuid, parent_uuid,
-	ts, seq, role, kind, tool, cwd, branch, n_chars, text`
+	ts, seq, role, kind, tool, cwd, branch, n_chars, text,
+	model, request_id, tool_use_id, is_error, prompt_source, file_path, inv_kind, inv_name, inv_args`
 
 const stageSchema = `CREATE TEMP TABLE IF NOT EXISTS stage(` + stageCols + `)`
 
@@ -503,7 +510,7 @@ func (db *DB) writeFile(tx *sql.Tx, r *result, full bool, affected map[string]bo
 		if err := sessionsOfFile(tx, fileID, affected); err != nil {
 			return 0, err
 		}
-		if _, err := tx.Exec(`DELETE FROM msgs WHERE file_id=?`, fileID); err != nil {
+		if err := deleteFileRows(tx, fileID); err != nil {
 			return 0, err
 		}
 	}
@@ -525,8 +532,7 @@ func (db *DB) writeFile(tx *sql.Tx, r *result, full bool, affected map[string]bo
 	if _, err := tx.Exec(stageSchema); err != nil {
 		return 0, err
 	}
-	ins, err := tx.Prepare(`INSERT INTO temp.stage(file_id, source, session_id, agent_id, slug, uuid, parent_uuid,
-		ts, seq, role, kind, tool, cwd, branch, n_chars, text) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	ins, err := tx.Prepare(`INSERT INTO temp.stage(` + stageCols + `) VALUES(` + placeholders(25) + `)`)
 	if err != nil {
 		return 0, err
 	}
@@ -546,7 +552,8 @@ func (db *DB) writeFile(tx *sql.Tx, r *result, full bool, affected map[string]bo
 			ts = m.Time.UnixMilli()
 		}
 		if _, err := ins.Exec(fileID, j.src.Name(), m.SessionID, m.AgentID, m.Slug, m.UUID, m.ParentUUID,
-			ts, seq, m.Role, string(m.Kind), m.Tool, m.CWD, m.Branch, nChars, text); err != nil {
+			ts, seq, m.Role, string(m.Kind), m.Tool, m.CWD, m.Branch, nChars, text,
+			m.Model, m.RequestID, m.ToolUseID, m.IsError, m.PromptSource, m.FilePath, m.InvKind, m.InvName, m.InvArgs); err != nil {
 			return 0, err
 		}
 		seq++
@@ -563,16 +570,96 @@ func (db *DB) writeFile(tx *sql.Tx, r *result, full bool, affected map[string]bo
 		if err := ensureSession(tx, m.SessionID, j.src.Name(), project); err != nil {
 			return 0, err
 		}
-		if _, err := tx.Exec(`UPDATE sessions SET title=?, title_rank=? WHERE id=? AND title_rank<=?`,
-			m.Title, m.TitleRank, m.SessionID, m.TitleRank); err != nil {
-			return 0, err
+		if m.Title != "" {
+			if _, err := tx.Exec(`UPDATE sessions SET title=?, title_rank=? WHERE id=? AND title_rank<=?`,
+				m.Title, m.TitleRank, m.SessionID, m.TitleRank); err != nil {
+				return 0, err
+			}
 		}
+		if c := m.Cost; c != nil {
+			// Cumulative snapshots: the latest one in transcript order wins.
+			if _, err := tx.Exec(`UPDATE sessions SET cost_usd=?, lines_added=?, lines_removed=?, duration_ms=? WHERE id=?`,
+				c.USD, c.LinesAdded, c.LinesRemoved, c.DurationMs, m.SessionID); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if err := writeRequests(tx, fileID, j.src.Name(), r.usages); err != nil {
+		return 0, err
+	}
+	if err := writeTurns(tx, fileID, j.src.Name(), r.turns); err != nil {
+		return 0, err
 	}
 	if _, err := tx.Exec(`UPDATE files SET size=?, mtime=?, byte_off=?, n_msg=?, full=?, head_crc=? WHERE id=?`,
 		j.size, j.mtime, r.endOff, seq, full, int64(r.headCRC), fileID); err != nil {
 		return 0, err
 	}
 	return written, nil
+}
+
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+func millis(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+// deleteFileRows removes everything derived from one transcript; the FTS
+// delete trigger keeps msgs_fts in step.
+func deleteFileRows(tx *sql.Tx, fileID int64) error {
+	for _, table := range []string{"msgs", "requests", "turns"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE file_id=?`, fileID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeRequests upserts token usage per API request. A request can be
+// spread over several lines, possibly across two syncs; the line with the
+// most output tokens is the final one and wins.
+func writeRequests(tx *sql.Tx, fileID int64, source string, us []model.Usage) error {
+	if len(us) == 0 {
+		return nil
+	}
+	st, err := tx.Prepare(`INSERT INTO requests(request_id, file_id, source, session_id, agent_id, ts, cwd, branch, model,
+		tok_in, tok_out, cache_read, cache_w5m, cache_w1h, tok_think) VALUES(` + placeholders(15) + `)
+		ON CONFLICT(request_id) DO UPDATE SET ts=excluded.ts, model=excluded.model,
+		tok_in=excluded.tok_in, tok_out=excluded.tok_out, cache_read=excluded.cache_read,
+		cache_w5m=excluded.cache_w5m, cache_w1h=excluded.cache_w1h, tok_think=excluded.tok_think
+		WHERE excluded.tok_out > requests.tok_out`)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	for _, u := range us {
+		if u.SessionID == "" {
+			continue
+		}
+		if _, err := st.Exec(u.RequestID, fileID, source, u.SessionID, u.AgentID, millis(u.Time), u.CWD, u.Branch, u.Model,
+			u.Input, u.Output, u.CacheRead, u.CacheWrite5m, u.CacheWrite1h, u.Thinking); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeTurns(tx *sql.Tx, fileID int64, source string, ts []model.Turn) error {
+	for _, t := range ts {
+		if t.SessionID == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO turns(file_id, source, session_id, agent_id, ts, cwd, branch, duration_ms, n_msgs)
+			VALUES(`+placeholders(9)+`)`, fileID, source, t.SessionID, t.AgentID, millis(t.Time), t.CWD, t.Branch,
+			t.DurationMs, t.Messages); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // flushStage moves staged rows into msgs with a single statement (so the FTS
@@ -641,7 +728,7 @@ func (db *DB) removeFile(fileID int64) error {
 	if err := sessionsOfFile(tx, fileID, affected); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM msgs WHERE file_id=?`, fileID); err != nil {
+	if err := deleteFileRows(tx, fileID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM files WHERE id=?`, fileID); err != nil {

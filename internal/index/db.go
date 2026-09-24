@@ -20,7 +20,9 @@ import (
 // from scratch.
 //
 //	2: tool_use input renders short values first
-const SchemaVersion = 2
+//	3: model, request, tool linkage, invocation and prompt-source columns;
+//	   requests and turns tables; session cost; queued prompts
+const SchemaVersion = 3
 
 // Truncation limits for tool_use / tool_result text, in characters.
 const (
@@ -108,7 +110,11 @@ CREATE TABLE IF NOT EXISTS sessions(
   first_prompt TEXT    NOT NULL DEFAULT '',
   started_at   INTEGER NOT NULL DEFAULT 0,
   ended_at     INTEGER NOT NULL DEFAULT 0,
-  n_msg        INTEGER NOT NULL DEFAULT 0
+  n_msg        INTEGER NOT NULL DEFAULT 0,
+  cost_usd      REAL    NOT NULL DEFAULT 0,
+  lines_added   INTEGER NOT NULL DEFAULT 0,
+  lines_removed INTEGER NOT NULL DEFAULT 0,
+  duration_ms   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS msgs(
   id          INTEGER PRIMARY KEY,
@@ -127,12 +133,68 @@ CREATE TABLE IF NOT EXISTS msgs(
   cwd         TEXT    NOT NULL DEFAULT '',
   branch      TEXT    NOT NULL DEFAULT '',
   n_chars     INTEGER NOT NULL,
-  text        TEXT    NOT NULL
+  text        TEXT    NOT NULL,
+  model         TEXT    NOT NULL DEFAULT '',
+  request_id    TEXT    NOT NULL DEFAULT '',
+  tool_use_id   TEXT    NOT NULL DEFAULT '',
+  is_error      INTEGER NOT NULL DEFAULT 0,
+  prompt_source TEXT    NOT NULL DEFAULT '',
+  file_path     TEXT    NOT NULL DEFAULT '',
+  inv_kind      TEXT    NOT NULL DEFAULT '',
+  inv_name      TEXT    NOT NULL DEFAULT '',
+  inv_args      TEXT    NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS requests(
+  request_id TEXT PRIMARY KEY,
+  file_id    INTEGER NOT NULL,
+  source     TEXT    NOT NULL,
+  session_id TEXT    NOT NULL,
+  agent_id   TEXT    NOT NULL DEFAULT '',
+  ts         INTEGER NOT NULL,
+  cwd        TEXT    NOT NULL DEFAULT '',
+  branch     TEXT    NOT NULL DEFAULT '',
+  model      TEXT    NOT NULL DEFAULT '',
+  tok_in     INTEGER NOT NULL DEFAULT 0,
+  tok_out    INTEGER NOT NULL DEFAULT 0,
+  cache_read INTEGER NOT NULL DEFAULT 0,
+  cache_w5m  INTEGER NOT NULL DEFAULT 0,
+  cache_w1h  INTEGER NOT NULL DEFAULT 0,
+  tok_think  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS turns(
+  id          INTEGER PRIMARY KEY,
+  file_id     INTEGER NOT NULL,
+  source      TEXT    NOT NULL,
+  session_id  TEXT    NOT NULL,
+  agent_id    TEXT    NOT NULL DEFAULT '',
+  ts          INTEGER NOT NULL,
+  cwd         TEXT    NOT NULL DEFAULT '',
+  branch      TEXT    NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL,
+  n_msgs      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS msgs_file    ON msgs(file_id, seq);
 CREATE INDEX IF NOT EXISTS msgs_session ON msgs(session_id, ts);
 CREATE INDEX IF NOT EXISTS msgs_ts      ON msgs(ts);
 CREATE INDEX IF NOT EXISTS sessions_ended ON sessions(ended_at);
+-- Narrow covering index: aggregations over time never touch text pages.
+CREATE INDEX IF NOT EXISTS msgs_cover   ON msgs(ts, kind, agent_id, session_id, tool, branch, cwd);
+CREATE INDEX IF NOT EXISTS msgs_tooluse ON msgs(tool_use_id) WHERE tool_use_id <> '';
+-- Finds the next prompt / interruption after a message without reading text.
+CREATE INDEX IF NOT EXISTS msgs_file_kind ON msgs(file_id, kind, seq);
+CREATE INDEX IF NOT EXISTS msgs_inv     ON msgs(inv_kind, inv_name, ts) WHERE inv_kind <> '';
+CREATE INDEX IF NOT EXISTS requests_file ON requests(file_id);
+CREATE INDEX IF NOT EXISTS requests_ts   ON requests(ts);
+CREATE INDEX IF NOT EXISTS turns_file    ON turns(file_id);
+CREATE INDEX IF NOT EXISTS turns_ts      ON turns(ts);
+
+-- One row per slash command the user typed, skill or sub-agent the model
+-- started.
+CREATE VIEW IF NOT EXISTS invocations AS
+  SELECT id AS msg_id, file_id, seq, source, session_id, agent_id, ts, cwd, branch,
+         CASE inv_kind WHEN 'command' THEN 'user' ELSE 'agent' END AS actor,
+         inv_kind AS kind, inv_name AS name, inv_args AS args, tool_use_id
+  FROM msgs WHERE inv_kind <> '';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS msgs_fts USING fts5(
   text, content='msgs', content_rowid='id', tokenize='trigram'
@@ -151,6 +213,7 @@ END;
 
 var dropAll = []string{
 	"DROP TRIGGER IF EXISTS msgs_ai", "DROP TRIGGER IF EXISTS msgs_ad", "DROP TRIGGER IF EXISTS msgs_au",
+	"DROP VIEW IF EXISTS invocations", "DROP TABLE IF EXISTS requests", "DROP TABLE IF EXISTS turns",
 	"DROP TABLE IF EXISTS msgs_fts", "DROP TABLE IF EXISTS msgs",
 	"DROP TABLE IF EXISTS sessions", "DROP TABLE IF EXISTS files", "DROP TABLE IF EXISTS meta",
 }

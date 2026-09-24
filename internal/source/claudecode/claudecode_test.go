@@ -13,11 +13,17 @@ const hdr = `"uuid":"u1","parentUuid":"p0","timestamp":"2026-09-11T05:57:00.123Z
 
 func parse(t *testing.T, line string) ([]model.Message, *model.SessionMeta) {
 	t.Helper()
-	msgs, meta, err := New().ParseLine([]byte(line))
+	p := parseAll(t, line)
+	return p.Messages, p.Meta
+}
+
+func parseAll(t *testing.T, line string) model.Parsed {
+	t.Helper()
+	p, err := New().ParseLine([]byte(line))
 	if err != nil {
 		t.Fatalf("ParseLine: %v", err)
 	}
-	return msgs, meta
+	return p
 }
 
 type want struct {
@@ -213,10 +219,10 @@ func TestParseTitles(t *testing.T) {
 }
 
 func TestParseInvalidJSON(t *testing.T) {
-	if _, _, err := New().ParseLine([]byte(`{"type":"user",`)); err == nil {
+	if _, err := New().ParseLine([]byte(`{"type":"user",`)); err == nil {
 		t.Fatal("want error for truncated JSON")
 	}
-	if msgs, meta, err := New().ParseLine([]byte("  \n")); err != nil || msgs != nil || meta != nil {
+	if p, err := New().ParseLine([]byte("  \n")); err != nil || p.Messages != nil || p.Meta != nil || p.Usage != nil {
 		t.Fatal("blank line must be ignored")
 	}
 }
@@ -252,5 +258,103 @@ func TestRenderInputShortValuesFirst(t *testing.T) {
 	want := "b=2\nskill=ic-commit\nargs=" + long
 	if got != want {
 		t.Fatalf("identifying fields must precede long values, got prefix %q", got[:40])
+	}
+}
+
+func TestParseAssistantFacts(t *testing.T) {
+	line := `{"type":"assistant",` + hdr + `,"requestId":"req_1","message":{"id":"msg_1","model":"claude-opus-5","role":"assistant",` +
+		`"usage":{"input_tokens":3,"output_tokens":120,"cache_read_input_tokens":5000,"cache_creation_input_tokens":700,` +
+		`"cache_creation":{"ephemeral_5m_input_tokens":200,"ephemeral_1h_input_tokens":500},"output_tokens_details":{"thinking_tokens":40}},` +
+		`"content":[{"type":"text","text":"ok"},` +
+		`{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"/home/alice/a.go","old_string":"x","new_string":"y"}},` +
+		`{"type":"tool_use","id":"toolu_2","name":"Skill","input":{"skill":"/ic-commit","args":"fix: typo"}},` +
+		`{"type":"tool_use","id":"toolu_3","name":"Agent","input":{"subagent_type":"Explore","description":"find callers","prompt":"long prompt"}},` +
+		`{"type":"tool_use","id":"toolu_4","name":"Task","input":{"description":"no type","prompt":"p"}}]}}`
+	p := parseAll(t, line)
+	if len(p.Messages) != 5 {
+		t.Fatalf("want 5 messages, got %d", len(p.Messages))
+	}
+	for _, m := range p.Messages {
+		if m.Model != "claude-opus-5" || m.RequestID != "req_1" {
+			t.Fatalf("model/request not attached: %+v", m)
+		}
+	}
+	edit, skill, agent, task := p.Messages[1], p.Messages[2], p.Messages[3], p.Messages[4]
+	if edit.ToolUseID != "toolu_1" || edit.FilePath != "/home/alice/a.go" || edit.InvKind != "" {
+		t.Errorf("edit: %+v", edit)
+	}
+	if skill.InvKind != model.InvSkill || skill.InvName != "ic-commit" || skill.InvArgs != "fix: typo" {
+		t.Errorf("skill invocation: %+v", skill)
+	}
+	if agent.InvKind != model.InvSubagent || agent.InvName != "Explore" || agent.InvArgs != "find callers" {
+		t.Errorf("agent invocation: %+v", agent)
+	}
+	if task.InvName != "(default)" {
+		t.Errorf("sub-agent without type: %+v", task)
+	}
+	u := p.Usage
+	want := model.Usage{RequestID: "req_1", SessionID: "s1", Model: "claude-opus-5", CWD: "/home/alice/code/demo", Branch: "main",
+		Time: p.Messages[0].Time, Input: 3, Output: 120, CacheRead: 5000, CacheWrite5m: 200, CacheWrite1h: 500, Thinking: 40}
+	if u == nil || *u != want {
+		t.Errorf("usage = %+v\nwant    %+v", u, want)
+	}
+
+	// Without the TTL split, all cache writes count as 5-minute writes;
+	// message.id stands in for a missing requestId.
+	old := `{"type":"assistant",` + hdr + `,"message":{"id":"msg_9","model":"m","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":9}}}`
+	if u := parseAll(t, old).Usage; u == nil || u.RequestID != "msg_9" || u.CacheWrite5m != 9 || u.CacheWrite1h != 0 {
+		t.Errorf("legacy usage: %+v", u)
+	}
+}
+
+func TestParseToolResultLinkAndError(t *testing.T) {
+	line := `{"type":"user",` + hdr + `,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"exit 1"}]}}`
+	msgs, _ := parse(t, line)
+	if len(msgs) != 1 || msgs[0].ToolUseID != "toolu_1" || !msgs[0].IsError {
+		t.Fatalf("tool_result link/error: %+v", msgs)
+	}
+}
+
+func TestParseCommandInvocationAndPromptSource(t *testing.T) {
+	msgs, _ := parse(t, `{"type":"user",`+hdr+`,"promptSource":"typed","message":{"role":"user","content":"<command-name>/ic-web-debug</command-name>\n<command-args>check the login page</command-args>"}}`)
+	if len(msgs) != 1 || msgs[0].InvKind != model.InvCommand || msgs[0].InvName != "ic-web-debug" ||
+		msgs[0].InvArgs != "check the login page" || msgs[0].PromptSource != "typed" {
+		t.Fatalf("command invocation: %+v", msgs)
+	}
+	msgs, _ = parse(t, `{"type":"user",`+hdr+`,"message":{"role":"user","content":"plain question"}}`)
+	if msgs[0].InvKind != "" {
+		t.Fatal("prompts are not invocations")
+	}
+}
+
+func TestParseQueuedPrompt(t *testing.T) {
+	q := `{"type":"attachment",` + hdr + `,"attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"also check the tax line"}}`
+	msgs, _ := parse(t, q)
+	if len(msgs) != 1 || msgs[0].Kind != model.KindPrompt || msgs[0].Text != "also check the tax line" || msgs[0].PromptSource != "queued" {
+		t.Fatalf("queued prompt: %+v", msgs)
+	}
+	blocks := strings.Replace(q, `"prompt":"also check the tax line"`, `"prompt":[{"type":"text","text":"see this"},{"type":"image","source":{}}]`, 1)
+	if msgs, _ := parse(t, blocks); len(msgs) != 1 || msgs[0].Text != "see this\n[image]" {
+		t.Fatalf("queued prompt with blocks: %+v", msgs)
+	}
+	for _, other := range []string{
+		strings.Replace(q, `"commandMode":"prompt"`, `"commandMode":"task-notification"`, 1),
+		strings.Replace(q, `"kind":"human"`, `"kind":"auto-continuation"`, 1),
+		strings.Replace(q, `"queued_command"`, `"file"`, 1),
+	} {
+		if msgs, _ := parse(t, other); len(msgs) != 0 {
+			t.Errorf("must be ignored: %s", other)
+		}
+	}
+}
+
+func TestParseTurnAndCost(t *testing.T) {
+	p := parseAll(t, `{"type":"system",`+hdr+`,"subtype":"turn_duration","durationMs":84409,"messageCount":12,"isMeta":false}`)
+	if p.Turn == nil || p.Turn.DurationMs != 84409 || p.Turn.Messages != 12 || p.Turn.SessionID != "s1" || len(p.Messages) != 0 {
+		t.Fatalf("turn: %+v", p)
+	}
+	p = parseAll(t, `{"type":"cost-state","sessionId":"s1","totalCostUSD":12.5,"totalLinesAdded":300,"totalLinesRemoved":20,"totalDuration":99000,"modelUsage":{}}`)
+	if p.Meta == nil || p.Meta.Cost == nil || *p.Meta.Cost != (model.SessionCost{USD: 12.5, LinesAdded: 300, LinesRemoved: 20, DurationMs: 99000}) || p.Meta.Title != "" {
+		t.Fatalf("cost: %+v", p.Meta)
 	}
 }

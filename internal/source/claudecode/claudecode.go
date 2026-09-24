@@ -84,51 +84,106 @@ type record struct {
 	Slug             json.RawMessage `json:"slug"`
 	IsMeta           bool            `json:"isMeta"`
 	IsCompactSummary bool            `json:"isCompactSummary"`
+	PromptSource     string          `json:"promptSource"`
+	RequestID        string          `json:"requestId"`
 	Message          *struct {
+		ID      string          `json:"id"`
 		Role    string          `json:"role"`
+		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
+		Usage   *apiUsage       `json:"usage"`
 	} `json:"message"`
 	Content     json.RawMessage `json:"content"` // system records
 	Subtype     string          `json:"subtype"`
+	DurationMs  int64           `json:"durationMs"`   // system turn_duration
+	MsgCount    int64           `json:"messageCount"` // system turn_duration
 	AITitle     string          `json:"aiTitle"`
 	CustomTitle string          `json:"customTitle"`
 	AgentName   string          `json:"agentName"`
+	Attachment  *struct {
+		Type        string          `json:"type"`
+		CommandMode string          `json:"commandMode"`
+		Prompt      json.RawMessage `json:"prompt"`
+		Origin      *struct {
+			Kind string `json:"kind"`
+		} `json:"origin"`
+	} `json:"attachment"`
+	// cost-state
+	TotalCostUSD      float64 `json:"totalCostUSD"`
+	TotalLinesAdded   int64   `json:"totalLinesAdded"`
+	TotalLinesRemoved int64   `json:"totalLinesRemoved"`
+	TotalDuration     int64   `json:"totalDuration"`
+}
+
+type apiUsage struct {
+	Input         int64 `json:"input_tokens"`
+	Output        int64 `json:"output_tokens"`
+	CacheRead     int64 `json:"cache_read_input_tokens"`
+	CacheCreation int64 `json:"cache_creation_input_tokens"`
+	Creation      *struct {
+		Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+	OutputDetails *struct {
+		Thinking int64 `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 type block struct {
-	Type     string          `json:"type"`
-	Text     string          `json:"text"`
-	Thinking string          `json:"thinking"`
-	Name     string          `json:"name"`
-	Input    json.RawMessage `json:"input"`
-	Content  json.RawMessage `json:"content"` // tool_result payload
+	Type      string          `json:"type"`
+	ID        string          `json:"id"` // tool_use
+	Text      string          `json:"text"`
+	Thinking  string          `json:"thinking"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"` // tool_result
+	IsError   bool            `json:"is_error"`    // tool_result
+	Content   json.RawMessage `json:"content"`     // tool_result payload
 }
 
 // ParseLine implements model.Source.
-func (s *Source) ParseLine(line []byte) ([]model.Message, *model.SessionMeta, error) {
+func (s *Source) ParseLine(line []byte) (model.Parsed, error) {
+	var p model.Parsed
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
-		return nil, nil, nil
+		return p, nil
 	}
 	var r record
 	if err := json.Unmarshal(line, &r); err != nil {
-		return nil, nil, fmt.Errorf("claudecode: %w", err)
+		return p, fmt.Errorf("claudecode: %w", err)
 	}
 	switch r.Type {
 	case "ai-title":
-		return nil, titleMeta(&r, r.AITitle, model.TitleRankAuto), nil
+		p.Meta = titleMeta(&r, r.AITitle, model.TitleRankAuto)
 	case "agent-name":
-		return nil, titleMeta(&r, r.AgentName, model.TitleRankAuto), nil
+		p.Meta = titleMeta(&r, r.AgentName, model.TitleRankAuto)
 	case "custom-title":
-		return nil, titleMeta(&r, r.CustomTitle, model.TitleRankCustom), nil
+		p.Meta = titleMeta(&r, r.CustomTitle, model.TitleRankCustom)
+	case "cost-state":
+		if r.SessionID != "" {
+			p.Meta = &model.SessionMeta{SessionID: r.SessionID, Cost: &model.SessionCost{
+				USD: r.TotalCostUSD, LinesAdded: r.TotalLinesAdded,
+				LinesRemoved: r.TotalLinesRemoved, DurationMs: r.TotalDuration,
+			}}
+		}
 	case "user":
-		return parseUser(&r), nil, nil
+		if r.Message != nil {
+			p.Messages = parseUser(&r, r.Message.Content, r.PromptSource)
+		}
+	case "attachment":
+		p.Messages = parseQueued(&r)
 	case "assistant":
-		return parseAssistant(&r), nil, nil
+		p.Messages = parseAssistant(&r)
+		p.Usage = usageOf(&r)
 	case "system":
-		return parseSystem(&r), nil, nil
+		p.Messages = parseSystem(&r)
+		if r.Subtype == "turn_duration" && r.DurationMs > 0 {
+			b := base(&r, "system")
+			p.Turn = &model.Turn{SessionID: b.SessionID, AgentID: b.AgentID, CWD: b.CWD, Branch: b.Branch,
+				Time: b.Time, DurationMs: r.DurationMs, Messages: r.MsgCount}
+		}
 	}
-	return nil, nil, nil
+	return p, nil
 }
 
 func titleMeta(r *record, title string, rank int) *model.SessionMeta {
@@ -159,25 +214,26 @@ func base(r *record, role string) model.Message {
 	return m
 }
 
-func parseUser(r *record) []model.Message {
-	if r.Message == nil {
-		return nil
-	}
-	content := r.Message.Content
+// parseUser handles user content, which is a string or a block array.
+func parseUser(r *record, content json.RawMessage, source string) []model.Message {
 	var out []model.Message
-	emit := func(kind model.Kind, text string) {
-		if text == "" {
+	emitText := func(raw string) {
+		c := classifyUser(r, raw)
+		if c.text == "" {
 			return
 		}
 		m := base(r, "user")
-		m.Kind, m.Text = kind, text
+		m.Kind, m.Text, m.PromptSource = c.kind, c.text, source
+		if c.kind == model.KindCommand {
+			m.InvKind, m.InvName, m.InvArgs = model.InvCommand, strings.TrimPrefix(c.name, "/"), c.args
+		}
 		out = append(out, m)
 	}
 
 	// Plain string content.
 	var str string
 	if json.Unmarshal(content, &str) == nil {
-		emit(classifyUser(r, str))
+		emitText(str)
 		return out
 	}
 
@@ -195,32 +251,56 @@ func parseUser(r *record) []model.Message {
 		case "image":
 			parts = append(parts, "[image]")
 		case "tool_result":
-			emit(model.KindToolResult, Clean(renderToolResult(b.Content)))
+			// Keep empty results that link to a call: they carry the outcome.
+			if text := Clean(renderToolResult(b.Content)); text != "" || b.ToolUseID != "" {
+				m := base(r, "user")
+				m.Kind, m.Text, m.ToolUseID, m.IsError = model.KindToolResult, text, b.ToolUseID, b.IsError
+				out = append(out, m)
+			}
 		}
 	}
 	if len(parts) > 0 {
-		emit(classifyUser(r, strings.Join(parts, "\n")))
+		emitText(strings.Join(parts, "\n"))
 	}
 	return out
 }
 
+// parseQueued recovers input the user typed while the agent was busy. Such
+// input is recorded only as a queued_command attachment.
+func parseQueued(r *record) []model.Message {
+	a := r.Attachment
+	if a == nil || a.Type != "queued_command" || a.CommandMode != "prompt" || len(a.Prompt) == 0 {
+		return nil
+	}
+	if a.Origin != nil && a.Origin.Kind != "human" {
+		return nil // automatic continuations and coordinator messages
+	}
+	return parseUser(r, a.Prompt, "queued")
+}
+
+type classified struct {
+	kind       model.Kind
+	text       string
+	name, args string // for commands
+}
+
 // classifyUser applies the cleaning rules and decides the kind of a
 // user-authored text. An empty text means "drop it".
-func classifyUser(r *record, raw string) (model.Kind, string) {
+func classifyUser(r *record, raw string) classified {
 	if r.IsCompactSummary {
-		return model.KindSummary, strings.TrimSpace(raw)
+		return classified{kind: model.KindSummary, text: strings.TrimSpace(raw)}
 	}
 	text := Clean(raw)
 	if r.IsMeta {
-		return model.KindMeta, text
+		return classified{kind: model.KindMeta, text: text}
 	}
 	if name, args, ok := extractCommand(raw); ok {
-		return model.KindCommand, strings.TrimSpace(name + " " + args)
+		return classified{kind: model.KindCommand, text: strings.TrimSpace(name + " " + args), name: name, args: args}
 	}
 	if isMetaText(text) {
-		return model.KindMeta, text
+		return classified{kind: model.KindMeta, text: text}
 	}
-	return model.KindPrompt, text
+	return classified{kind: model.KindPrompt, text: text}
 }
 
 func parseAssistant(r *record) []model.Message {
@@ -238,19 +318,88 @@ func parseAssistant(r *record) []model.Message {
 	var out []model.Message
 	for _, b := range blocks {
 		m := base(r, "assistant")
+		m.Model, m.RequestID = r.Message.Model, requestID(r)
 		switch b.Type {
 		case "text":
 			m.Kind, m.Text = model.KindReply, strings.TrimSpace(b.Text)
 		case "thinking":
 			m.Kind, m.Text = model.KindThink, strings.TrimSpace(b.Thinking)
 		case "tool_use":
-			m.Kind, m.Tool, m.Text = model.KindToolUse, b.Name, RenderInput(b.Input)
+			m.Kind, m.Tool, m.Text, m.ToolUseID = model.KindToolUse, b.Name, RenderInput(b.Input), b.ID
+			describeToolUse(&m, b.Input)
 		default:
 			continue
 		}
 		if m.Text != "" {
 			out = append(out, m)
 		}
+	}
+	return out
+}
+
+// describeToolUse fills the file and invocation fields of a tool call.
+func describeToolUse(m *model.Message, raw json.RawMessage) {
+	var in map[string]json.RawMessage
+	if json.Unmarshal(raw, &in) != nil {
+		return
+	}
+	str := func(k string) string {
+		var s string
+		if json.Unmarshal(in[k], &s) == nil {
+			return strings.TrimSpace(s)
+		}
+		if v := in[k]; len(v) > 0 && string(v) != "null" {
+			return string(v)
+		}
+		return ""
+	}
+	m.FilePath = str("file_path")
+	if m.FilePath == "" {
+		m.FilePath = str("notebook_path")
+	}
+	switch m.Tool {
+	case "Skill":
+		if name := strings.TrimPrefix(str("skill"), "/"); name != "" {
+			m.InvKind, m.InvName, m.InvArgs = model.InvSkill, name, str("args")
+		}
+	case "Agent", "Task":
+		name := str("subagent_type")
+		if name == "" {
+			name = "(default)"
+		}
+		m.InvKind, m.InvName, m.InvArgs = model.InvSubagent, name, str("description")
+	}
+}
+
+func requestID(r *record) string {
+	if r.RequestID != "" {
+		return r.RequestID
+	}
+	return r.Message.ID
+}
+
+func usageOf(r *record) *model.Usage {
+	if r.Message == nil || r.Message.Usage == nil {
+		return nil
+	}
+	id := requestID(r)
+	if id == "" {
+		return nil
+	}
+	u := r.Message.Usage
+	b := base(r, "assistant")
+	out := &model.Usage{
+		RequestID: id, SessionID: b.SessionID, AgentID: b.AgentID, Model: r.Message.Model,
+		CWD: b.CWD, Branch: b.Branch, Time: b.Time,
+		Input: u.Input, Output: u.Output, CacheRead: u.CacheRead,
+	}
+	if u.Creation != nil {
+		out.CacheWrite5m, out.CacheWrite1h = u.Creation.Ephemeral5m, u.Creation.Ephemeral1h
+	} else {
+		out.CacheWrite5m = u.CacheCreation // older records do not split by TTL
+	}
+	if u.OutputDetails != nil {
+		out.Thinking = u.OutputDetails.Thinking
 	}
 	return out
 }

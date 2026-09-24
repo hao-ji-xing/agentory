@@ -458,3 +458,157 @@ func TestOpenPathWithURIDelimiters(t *testing.T) {
 		t.Fatalf("database not created at the literal path: %v", err)
 	}
 }
+
+// assistantLine builds an assistant record of request rid with the given
+// output token count, as Claude Code writes one line per content block.
+func assistantLine(sid string, n int, rid string, out int, text string) string {
+	ts := time.Date(2026, 9, 1, 10, 0, n, 0, time.UTC).Format(time.RFC3339)
+	return fmt.Sprintf(`{"type":"assistant","uuid":"a%d","sessionId":%q,"timestamp":%q,"cwd":"/home/alice/demo","requestId":%q,`+
+		`"message":{"id":"m-%s","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":%q}],`+
+		`"usage":{"input_tokens":2,"output_tokens":%d,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50,`+
+		`"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":50}}}}`+"\n",
+		n, sid, ts, rid, rid, text, out)
+}
+
+type reqRow struct {
+	out, cacheRead, w1h int64
+}
+
+func (e *env) requests() map[string]reqRow {
+	e.t.Helper()
+	rows, err := e.db.Query(`SELECT request_id, tok_out, cache_read, cache_w1h FROM requests`)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]reqRow{}
+	for rows.Next() {
+		var id string
+		var r reqRow
+		rows.Scan(&id, &r.out, &r.cacheRead, &r.w1h)
+		out[id] = r
+	}
+	return out
+}
+
+func TestSyncRequestSplitAcrossSyncsCountsOnce(t *testing.T) {
+	e := newEnv(t)
+	// Streaming writes the same request on several lines; the first line
+	// carries an intermediate output count.
+	e.write("s1.jsonl", assistantLine("s1", 1, "req_A", 10, "thinking about it"))
+	e.sync()
+	if r := e.requests(); len(r) != 1 || r["req_A"].out != 10 {
+		t.Fatalf("after first sync: %+v", r)
+	}
+	e.appendTo("s1.jsonl", assistantLine("s1", 2, "req_A", 300, "final answer")+assistantLine("s1", 3, "req_B", 7, "next"))
+	e.sync()
+	r := e.requests()
+	if len(r) != 2 || r["req_A"].out != 300 || r["req_A"].cacheRead != 1000 || r["req_A"].w1h != 50 || r["req_B"].out != 7 {
+		t.Fatalf("request must be counted once with its final usage: %+v", r)
+	}
+	// A later line with a smaller count must not overwrite the final one.
+	e.appendTo("s1.jsonl", assistantLine("s1", 4, "req_A", 5, "echo"))
+	e.sync()
+	if r := e.requests(); r["req_A"].out != 300 {
+		t.Fatalf("final usage overwritten by a smaller one: %+v", r["req_A"])
+	}
+}
+
+func TestSyncRebuildCascadesToDerivedTables(t *testing.T) {
+	e := newEnv(t)
+	turn := func(n int, ms int) string {
+		ts := time.Date(2026, 9, 1, 10, 0, n, 0, time.UTC).Format(time.RFC3339)
+		return fmt.Sprintf(`{"type":"system","subtype":"turn_duration","sessionId":"s1","timestamp":%q,"durationMs":%d,"messageCount":3}`+"\n", ts, ms)
+	}
+	e.write("s1.jsonl", assistantLine("s1", 1, "req_old", 100, "old")+turn(2, 5000))
+	e.sync()
+	e.write("s1.jsonl", assistantLine("s1", 1, "req_new", 40, "brand new content that is longer")+turn(2, 700)+turn(3, 800))
+	bumpMtime(t, e.path("s1.jsonl"))
+	if st := e.sync(); st.Rebuilt != 1 {
+		t.Fatalf("expected rebuild: %+v", st)
+	}
+	if r := e.requests(); len(r) != 1 || r["req_new"].out != 40 {
+		t.Fatalf("requests of the old content survived the rebuild: %+v", r)
+	}
+	var n, sum int64
+	e.db.QueryRow(`SELECT count(*), sum(duration_ms) FROM turns`).Scan(&n, &sum)
+	if n != 2 || sum != 1500 {
+		t.Fatalf("turns after rebuild: n=%d sum=%d, want 2/1500", n, sum)
+	}
+	os.Remove(e.path("s1.jsonl"))
+	if _, err := e.db.Sync(context.Background(), e.src, Options{Prune: true}); err != nil {
+		t.Fatal(err)
+	}
+	e.db.QueryRow(`SELECT (SELECT count(*) FROM requests) + (SELECT count(*) FROM turns)`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("prune left %d derived rows", n)
+	}
+}
+
+func TestSyncSessionCostAndQueuedPrompts(t *testing.T) {
+	e := newEnv(t)
+	cost := func(usd float64, added int) string {
+		return fmt.Sprintf(`{"type":"cost-state","sessionId":"s1","totalCostUSD":%g,"totalLinesAdded":%d,"totalLinesRemoved":1,"totalDuration":60000}`+"\n", usd, added)
+	}
+	queued := `{"type":"attachment","uuid":"q1","sessionId":"s1","timestamp":"2026-09-01T10:00:05Z","cwd":"/home/alice/demo",` +
+		`"attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"also handle refunds"}}` + "\n"
+	e.write("s1.jsonl", userLine("s1", 1, "start")+cost(1.5, 10)+queued+cost(4.25, 80))
+	e.sync()
+	var usd float64
+	var added, removed, dur, nMsg int64
+	e.db.QueryRow(`SELECT cost_usd, lines_added, lines_removed, duration_ms, n_msg FROM sessions WHERE id='s1'`).
+		Scan(&usd, &added, &removed, &dur, &nMsg)
+	if usd != 4.25 || added != 80 || removed != 1 || dur != 60000 {
+		t.Fatalf("session cost must be the latest snapshot: %v %d %d %d", usd, added, removed, dur)
+	}
+	var kind, source string
+	if err := e.db.QueryRow(`SELECT kind, prompt_source FROM msgs WHERE text='also handle refunds'`).Scan(&kind, &source); err != nil ||
+		kind != "prompt" || source != "queued" || nMsg != 2 {
+		t.Fatalf("queued prompt: kind=%q source=%q n_msg=%d err=%v", kind, source, nMsg, err)
+	}
+}
+
+func TestOpenUpgradesOldSchema(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "index.db")
+	db, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMeta("schema_version", "2")
+	db.Exec(`DROP TABLE requests`)
+	db.Close()
+	db, err = Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`SELECT count(*) FROM requests`); err != nil {
+		t.Fatalf("an index with an older schema version must be rebuilt: %v", err)
+	}
+}
+
+func TestSchemaDocCoversEveryColumn(t *testing.T) {
+	e := newEnv(t)
+	for _, table := range []string{"msgs", "requests", "turns", "sessions", "files", "meta", "invocations"} {
+		rows, err := e.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for rows.Next() {
+			var col string
+			rows.Scan(&col)
+			n++
+			if !strings.Contains(SchemaDoc, col) {
+				t.Errorf("column %s.%s is not documented in SchemaDoc", table, col)
+			}
+		}
+		rows.Close()
+		if n == 0 {
+			t.Errorf("table %s has no columns", table)
+		}
+		if !strings.Contains(SchemaDoc, "\n"+table+" ") {
+			t.Errorf("table %s has no section in SchemaDoc", table)
+		}
+	}
+}
