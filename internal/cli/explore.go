@@ -105,7 +105,7 @@ func (a *app) usage(args []string) error {
 	fs.str(&s.until, "u", "until", "", "<when>", "only uses before")
 	fs.str(&s.branch, "", "branch", "", "<name>", "filter by git branch")
 	fs.str(&s.sources, "", "source", "", "<names>", "comma list of sources")
-	fs.int(&groups, "g", "groups", 20, "<n>", "argument groups to show")
+	fs.int(&groups, "n", "groups", 20, "<n>", "argument groups to show")
 	fs.int(&recent, "r", "recent", 10, "<n>", "recent uses to show")
 	fs.bool(&s.subagent, "", "include-subagent", "include uses inside sub-agents")
 	fs.bool(&s.json, "", "json", "machine-readable output")
@@ -354,7 +354,11 @@ func (r *renderer) usage(u *query.UsageResult) {
 		fmt.Fprintf(r.w, "  %s  %s  %-5s  %s  %s%s\n", r.paint(ansiDim, in.Time.Local().Format("01-02 15:04")),
 			r.paint(ansiYellow, fmt.Sprintf("#%d", in.ID)), in.Actor, r.paint(ansiCyan, in.Project), args, flags)
 		if in.Next != "" {
-			fmt.Fprintf(r.w, "      %s\n", r.paint(ansiDim, "→ next: "+truncRunes(in.Next, 100)))
+			label := "→ next: "
+			if in.NextSource == "queued" {
+				label = "→ next (typed while it ran): "
+			}
+			fmt.Fprintf(r.w, "      %s\n", r.paint(ansiDim, label+truncRunes(in.Next, 100)))
 		}
 	}
 }

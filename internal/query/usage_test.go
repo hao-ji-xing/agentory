@@ -29,7 +29,7 @@ func usageFixture(t *testing.T) *index.DB {
 	}
 	prompt := func(s string) string { return fmt.Sprintf(`"type":"user","message":{"role":"user","content":%q}`, s) }
 	content := rec("/w/shop", cmd("v1  to prod")) + // args are whitespace-normalized when grouped
-		rec("/w/shop", prompt("looks good")) +
+		rec("/w/shop", `"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"looks good"}`) +
 		rec("/w/shop", cmd("")) +
 		rec("/w/shop", `"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}`) +
 		rec("/w/shop", prompt("stop, use v2")) +
@@ -74,7 +74,8 @@ func TestUsage(t *testing.T) {
 	if len(r) != 4 || r[0].Next != "" || r[1].Actor != "agent" || !r[1].Error {
 		t.Fatalf("recent[0..1]: %+v", r[:2])
 	}
-	if !r[2].Interrupted || r[2].Next != "stop, use v2" || r[3].Interrupted || r[3].Next != "looks good" {
+	if !r[2].Interrupted || r[2].Next != "stop, use v2" || r[3].Interrupted || r[3].Next != "looks good" ||
+		r[3].NextSource != "queued" || r[2].NextSource != "" {
 		t.Fatalf("recent[2..3]: %+v", r[2:])
 	}
 
@@ -112,15 +113,15 @@ func TestRunSQLIsReadOnlyAndBounded(t *testing.T) {
 	if n == 0 {
 		t.Fatal("data was modified")
 	}
-	// Writes work again for the indexer afterwards.
-	if _, err := db.Exec(`INSERT INTO meta(key, value) VALUES('probe', '1')`); err != nil {
-		t.Fatalf("query_only leaked: %v", err)
-	}
 	tctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	slow := `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c`
 	start := time.Now()
 	if _, err := RunSQL(tctx, db, slow, 0); err == nil || time.Since(start) > 5*time.Second {
 		t.Fatalf("timeout not enforced: err=%v after %v", err, time.Since(start))
+	}
+	// Writes work again for the indexer afterwards, also after a timeout.
+	if _, err := db.Exec(`INSERT INTO meta(key, value) VALUES('probe', '1')`); err != nil {
+		t.Fatalf("query_only leaked: %v", err)
 	}
 }

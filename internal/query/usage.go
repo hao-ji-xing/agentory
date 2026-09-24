@@ -36,6 +36,9 @@ type Invocation struct {
 	Interrupted bool      `json:"interrupted"` // the user interrupted before the next prompt
 	Next        string    `json:"next,omitempty"`
 	NextID      int64     `json:"next_id,omitempty"`
+	// NextSource is how the next prompt was entered: "typed", or "queued"
+	// when the user wrote it while this invocation was still running.
+	NextSource string `json:"next_source,omitempty"`
 }
 
 // UsageResult describes how one command, skill or sub-agent type is used.
@@ -183,7 +186,7 @@ func fillNext(db *index.DB, evs []Invocation) error {
 			continue
 		}
 		var text string
-		err := db.QueryRow(`SELECT text FROM msgs WHERE id = ?`, evs[i].NextID).Scan(&text)
+		err := db.QueryRow(`SELECT text, prompt_source FROM msgs WHERE id = ?`, evs[i].NextID).Scan(&text, &evs[i].NextSource)
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}

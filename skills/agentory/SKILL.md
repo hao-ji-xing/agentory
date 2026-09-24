@@ -118,9 +118,12 @@ object). `-n` limits the buckets (default 20); raise it for the long tail.
 (`/name args`) and what the agent invoked (Skill tool, sub-agent type):
 `by_actor`, `with_args`, `errors`, `interrupted` (the user interrupted
 before the next prompt), `projects`, `arg_groups` (distinct arguments with
-counts, most frequent first) and `recent` uses with `next` — the prompt the
-user wrote afterwards, which shows whether they corrected or continued. A
-leading `/` is optional; unknown names return `suggestions`.
+counts, most frequent first; `-n` sets how many) and `recent` uses (`-r`)
+with `next` — the prompt the user wrote afterwards, which shows whether they
+corrected or continued (`next_source: queued` means it was typed while the
+invocation was still running). A leading `/` is optional; unknown names
+return `suggestions`. Names are matched exactly: aliases such as `ic:x` and
+`ic-x` are separate — check `top --by name` and combine them yourself.
 
 ## Recipes
 
