@@ -114,7 +114,9 @@ Filters: `-p <project>`, `-s 30d`, `-k prompt,reply`, `--all` for tool output.
 agentory <query> [flags]              等价于 search（最高频路径）
 agentory search <query> [flags]
 agentory show <msg-id|session-id> [-C N]
-agentory top --by <维度> [query] [flags]
+agentory top --by <维度>[,<维度>] [--measure count|tokens|turns|cost]
+agentory usage <命令|skill> [flags]       某个命令或 skill 是怎么被使用的
+agentory sql "<SELECT …>" [--json]        只读 SQL；表结构见 `agentory schema`
 agentory sessions [flags]
 agentory projects
 agentory index [--full] [--rebuild] [--prune] [-v]
@@ -148,27 +150,61 @@ agentory watch                        基于 fsnotify 常驻更新索引
 查询语法：空格分隔的多个词是 AND 关系；每个词做大小写不敏感的子串匹配；
 用双引号包短语（`"lock ordering"`）。≥3 个字符的词走 trigram 索引，更短的词回退到 `LIKE`。
 
-### 使用统计：`top`
+### 多维探索：`top`、`usage`、`sql`
 
-`agentory top --by <维度>` 按分组统计命中消息数，查询词和过滤参数与 `search` 相同：
+`agentory top --by <维度>[,<维度>]` 按一个或两个维度聚合，查询词和过滤参数与 `search` 相同（以下输出来自 `testdata/` 里的合成数据）：
 
 ```console
-$ agentory top --by skill --since 7d
-    25  ic-commit          last 2026-09-23 17:51
-    14  ic-web-debug       last 2026-09-23 17:27
-    10  ic-review          last 2026-09-23 17:42
-…
-134 messages in 35 groups by skill, showing 20 (use -n for more)
+$ agentory top --by name,actor
+     1  Explore / agent  last 2026-08-20 01:01  with args 1/1
+     1  model / user     last 2026-08-20 01:00  with args 1/1
+2 messages in 2 groups by name,actor
+
+$ agentory top --by model --measure tokens
+               requests    output     input  cache rd  cache wr     hit
+claude-opus-5        2       300         8     24.0K      1600   93.7%
+(all)                2       300         8     24.0K      1600   93.7%
+2 requests in 1 group by model
+
+$ agentory top --by session --measure cost
+                                             usd  sessions  lines
+5f0c1d2e-0000-4000-8000-000000000001       $0.01         1  +0/-0  Fix invoice discount
+(all)                                      $0.01         1  +0/-0
+1 session in 1 group by session
 ```
 
 | `--by` | 分组依据 |
 |---|---|
-| `skill` | Skill 工具调用的 skill 名 |
-| `command` | 你手敲的斜杠命令 |
-| `tool` | 工具名 |
-| `input:<key>` | 工具入参的某个字段，如 `input:subagent_type` |
+| `skill`、`command`、`subagent_type` | agent 调用的 skill、你手敲的斜杠命令、启动的子 agent |
+| `name`、`actor` | 以上任意一种；`user`（你）或 `agent` |
+| `tool`、`file`、`error`、`input:<key>` | 工具调用、涉及的文件、结果（`ok`/`error`/`no result`）、某个入参 |
+| `model`、`agent` | 模型；主 agent 与子 agent |
 | `project`、`branch`、`session`、`kind`、`role`、`source` | 同名字段 |
-| `day` | 本地日期 |
+| `day`、`week`、`month`、`hour`、`weekday` | 本地时间 |
+
+`--measure` 决定统计什么：`count`（消息数，默认）、`tokens`（按请求去重的 API 用量：输入、输出、
+缓存读写与命中率）、`turns`（agent 回合数与耗时）、`cost`（各会话自报的成本，按 API 标价折算，
+不是订阅的实际扣费）。
+
+`agentory usage <名字>` 展示某个斜杠命令、skill 或子 agent 类型的使用方式——包括你敲的和 agent
+调的：次数与项目分布、名字后面跟的参数（按出现次数分组）、失败、被打断，以及你接下来说了什么：
+
+```console
+$ agentory usage model
+model — 1 use (1 typed by you, 0 by the agent), 1 with arguments, 0 errors, 0 interrupted
+first 2026-08-20 01:00  last 2026-08-20 01:00
+projects: shop×1
+
+arguments (1 distinct):
+      1  08-20 01:00  opus
+
+recent:
+  08-20 01:00  #3  user   shop  opus
+      → next: Why does the invoice total double count the discount? 发票金额为什么重复扣了折扣？
+```
+
+其余问题交给 `agentory sql "SELECT …"`；`agentory schema` 列出全部表结构（`msgs`、`invocations`
+视图、`requests`、`turns`、`sessions`）。查询只读，带行数上限和超时。
 
 ### 消息分类（kind）
 
@@ -229,7 +265,7 @@ trigram 索引无法匹配少于 3 个字符的词，这些词只能用 `LIKE` �
 
 **索引有多大？**
 在一份真实历史（1025 个 Claude Code 会话文件，共 1.4 GB JSONL）上，Apple Silicon 笔记本
-全量建索引耗时 50 秒，索引库 636 MiB；之后的增量同步只需几十毫秒。
+全量建索引约 60 秒，索引库约 720 MiB；之后的增量同步只需几十毫秒。
 
 **支持 Codex 吗？**
 在计划中。存储结构和数据源接口都已就绪，解析器还没写。

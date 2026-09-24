@@ -86,6 +86,8 @@ make install        # or: make build && ./agentory doctor
 
 ```sh
 agentory index                      # first build (about a minute for ~1.4 GB of transcripts)
+agentory top --by skill -s 7d       # which skills and commands you used this week
+agentory usage code-review          # how you use one of them
 agentory "lock ordering"            # search; same as `agentory search ...`
 agentory show 4213 -C 3             # read a hit with 3 messages of context
 agentory sessions -p shop -s 7d     # recent sessions of a project
@@ -120,7 +122,9 @@ Filters: `-p <project>`, `-s 30d`, `-k prompt,reply`, `--all` for tool output.
 agentory <query> [flags]              same as search (the most common path)
 agentory search <query> [flags]
 agentory show <msg-id|session-id> [-C N]
-agentory top --by <dimension> [query] [flags]
+agentory top --by <dim>[,<dim>] [--measure count|tokens|turns|cost]
+agentory usage <command|skill> [flags]   how one command or skill is used
+agentory sql "<SELECT …>" [--json]        read-only SQL; see `agentory schema`
 agentory sessions [flags]
 agentory projects
 agentory index [--full] [--rebuild] [--prune] [-v]
@@ -156,28 +160,68 @@ case-insensitive substring; wrap a phrase in double quotes (`"lock ordering"`).
 Terms of three or more characters use the trigram index; shorter ones fall
 back to `LIKE`.
 
-### Usage statistics: `top`
+### Exploring your history: `top`, `usage`, `sql`
 
-`agentory top --by <dimension>` counts matching messages per group, with the
-same query terms and filters as `search`:
+`agentory top --by <dim>[,<dim>]` aggregates the index by one or two
+dimensions, with the same query terms and filters as `search` (output from
+the synthetic fixture in `testdata/`):
 
 ```console
-$ agentory top --by skill --since 7d
-    25  ic-commit          last 2026-09-23 17:51
-    14  ic-web-debug       last 2026-09-23 17:27
-    10  ic-review          last 2026-09-23 17:42
-…
-134 messages in 35 groups by skill, showing 20 (use -n for more)
+$ agentory top --by name,actor
+     1  Explore / agent  last 2026-08-20 01:01  with args 1/1
+     1  model / user     last 2026-08-20 01:00  with args 1/1
+2 messages in 2 groups by name,actor
+
+$ agentory top --by model --measure tokens
+               requests    output     input  cache rd  cache wr     hit
+claude-opus-5        2       300         8     24.0K      1600   93.7%
+(all)                2       300         8     24.0K      1600   93.7%
+2 requests in 1 group by model
+
+$ agentory top --by session --measure cost
+                                             usd  sessions  lines
+5f0c1d2e-0000-4000-8000-000000000001       $0.01         1  +0/-0  Fix invoice discount
+(all)                                      $0.01         1  +0/-0
+1 session in 1 group by session
 ```
 
 | `--by` | groups by |
 |---|---|
-| `skill` | skill name of Skill tool calls |
-| `command` | slash commands you typed |
-| `tool` | tool name |
-| `input:<key>` | one tool input field, e.g. `input:subagent_type` |
+| `skill`, `command`, `subagent_type` | skills the agent invoked, slash commands you typed, sub-agents started |
+| `name`, `actor` | any of the above; `user` vs `agent` |
+| `tool`, `file`, `error`, `input:<key>` | tool calls, files they touched, outcome (`ok`/`error`/`no result`), one input field |
+| `model`, `agent` | model; main agent vs sub-agents |
 | `project`, `branch`, `session`, `kind`, `role`, `source` | as named |
-| `day` | local calendar day |
+| `day`, `week`, `month`, `hour`, `weekday` | local time |
+
+`--measure` chooses what is counted: `count` (messages, the default),
+`tokens` (API requests: input, output, prompt-cache reads/writes and hit
+rate, deduplicated per request), `turns` (agent turns and their duration)
+or `cost` (the cost each session reports, at API list prices — not what a
+subscription is billed).
+
+`agentory usage <name>` shows how one slash command, skill or sub-agent type
+is used — by you and by the agent: how often and where, the arguments that
+followed it (grouped by frequency), failures, interruptions, and what you
+wrote next:
+
+```console
+$ agentory usage model
+model — 1 use (1 typed by you, 0 by the agent), 1 with arguments, 0 errors, 0 interrupted
+first 2026-08-20 01:00  last 2026-08-20 01:00
+projects: shop×1
+
+arguments (1 distinct):
+      1  08-20 01:00  opus
+
+recent:
+  08-20 01:00  #3  user   shop  opus
+      → next: Why does the invoice total double count the discount? 发票金额为什么重复扣了折扣？
+```
+
+Anything else is one `agentory sql "SELECT …"` away; `agentory schema`
+documents the tables (`msgs`, the `invocations` view, `requests`, `turns`,
+`sessions`). Queries run read-only, with a row limit and a timeout.
 
 ### Message kinds
 
@@ -247,7 +291,7 @@ narrow the scan; `--explain` shows which path each term takes.
 
 **How big is the index?**
 On a real history of 1,025 Claude Code transcripts (1.4 GB of JSONL) a full
-build took 50 s and produced a 636 MiB index on an Apple Silicon laptop; later
+build took about 60 s and produced a 720 MiB index on an Apple Silicon laptop; later
 syncs take tens of milliseconds.
 
 **Codex support?**

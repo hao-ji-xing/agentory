@@ -28,9 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commands: `search`, `show`, `sessions`, `projects`, `index`, `stats`,
   `doctor`, `watch`, `version`.
 - Tool text truncation (2,000 characters, or 40,000 with `index --full`).
-- `top --by <dimension>` aggregates matching messages by skill, slash
-  command, tool, tool input field (`input:<key>`), project, branch, session,
-  kind, role, source or day.
+- `top --by <dim>[,<dim>]` aggregates by one or two dimensions — skill,
+  slash command, sub-agent type, invocation name or actor, tool, file, tool
+  outcome, tool input field, model, main vs sub-agent, project, branch,
+  session, kind, role, source, day, week, month, hour or weekday — with
+  `--measure count|tokens|turns|cost`.
+- `usage <name>` shows how one command, skill or sub-agent type is used:
+  who invoked it, argument groups, failures, interruptions and the prompt
+  that followed.
+- `sql` runs read-only queries (row limit, timeout); `schema` documents the
+  tables.
+- Token usage per API request (deduplicated across the lines a request is
+  written on), agent turn durations, session cost, models, tool call
+  outcomes, file paths and prompt sources are indexed.
+- Prompts typed while the agent was busy (recorded only as queued-command
+  attachments) are indexed as prompts.
 - `search --full-text` prints whole messages and adds `text` to JSON hits.
 - A Claude Code skill (`skills/agentory/SKILL.md`) that teaches the agent when
   and how to search history and compute usage statistics.
@@ -38,5 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Tool input is rendered with short values first, so identifying fields such
-  as `skill` or `subagent_type` survive truncation of long arguments. Existing
-  indexes are rebuilt automatically (schema version 2).
+  as `skill` or `subagent_type` survive truncation of long arguments.
+- Existing indexes are rebuilt automatically (schema version 3).
+- Grouping by local time uses precomputed zone offsets instead of SQLite's
+  `localtime` modifier, which was about 30 times slower.
