@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-24
+
+### Fixed
+
+- Grouping by local time (`top --by day`, `hour`, `week`, …) was one hour off
+  during daylight saving time on Windows, where Go's bundled zone data made
+  the transition walk stop early. Transitions are now found by sampling the
+  UTC offset daily and bisecting each change.
+
 ## [0.1.0] - 2026-09-24
 
 ### Added

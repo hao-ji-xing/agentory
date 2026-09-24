@@ -163,19 +163,34 @@ func zoneOffsetExpr(loc *time.Location, now time.Time) string {
 		startMs int64
 		offset  int
 	}
-	var ps []period
-	t := time.Date(2000, 1, 1, 0, 0, 0, 0, loc)
-	end := now.AddDate(1, 0, 0)
-	for t.Before(end) {
-		_, off := t.Zone()
-		if len(ps) == 0 || ps[len(ps)-1].offset != off {
-			ps = append(ps, period{t.UnixMilli(), off})
+	offsetAt := func(sec int64) int {
+		_, off := time.Unix(sec, 0).In(loc).Zone()
+		return off
+	}
+	// Sample the offset daily and bisect each change down to the second.
+	// Walking the transitions with ZoneBounds is not reliable: with the
+	// compact zone data Go ships (used on Windows) it stops at the last
+	// explicit transition and misses every rule-based DST change after it.
+	const day = 86400
+	start := time.Date(2000, 1, 1, 0, 0, 0, 0, loc).Unix()
+	end := now.AddDate(1, 0, 0).Unix()
+	prev := offsetAt(start)
+	ps := []period{{start * 1000, prev}}
+	for t := start + day; t < end+day; t += day {
+		off := offsetAt(t)
+		if off == prev {
+			continue
 		}
-		_, next := t.ZoneBounds()
-		if next.IsZero() || !next.After(t) {
-			break
+		lo, hi := t-day, t // offsetAt(lo) == prev, offsetAt(hi) == off
+		for hi-lo > 1 {
+			if mid := lo + (hi-lo)/2; offsetAt(mid) == prev {
+				lo = mid
+			} else {
+				hi = mid
+			}
 		}
-		t = next
+		ps = append(ps, period{hi * 1000, off})
+		prev = off
 	}
 	if len(ps) == 1 {
 		return fmt.Sprint(ps[0].offset)
