@@ -190,6 +190,19 @@ func (f *Filter) apply(w *where) {
 
 // BuildSearch plans a search without running it.
 func BuildSearch(q string, f Filter) *Plan {
+	p, w := plan(q, f)
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	p.SQL = "SELECT " + msgCols + " FROM msgs m LEFT JOIN sessions s ON s.id = m.session_id" +
+		w.sql() + " ORDER BY m.ts DESC, m.id DESC LIMIT ?"
+	p.Args = append(w.args, limit)
+	return p
+}
+
+// plan turns the query terms and filter into WHERE conditions.
+func plan(q string, f Filter) (*Plan, *where) {
 	p := &Plan{Terms: ParseTerms(q)}
 	w := &where{}
 	var phrases []string
@@ -221,14 +234,7 @@ func BuildSearch(q string, f Filter) *Plan {
 		p.Mode = "scan"
 	}
 	f.apply(w)
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	p.SQL = "SELECT " + msgCols + " FROM msgs m LEFT JOIN sessions s ON s.id = m.session_id" +
-		w.sql() + " ORDER BY m.ts DESC, m.id DESC LIMIT ?"
-	p.Args = append(w.args, limit)
-	return p
+	return p, w
 }
 
 // Search runs q with filter f, newest first.
