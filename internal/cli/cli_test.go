@@ -408,3 +408,116 @@ func TestFullModeRoundTrip(t *testing.T) {
 		t.Fatalf("--full=false should revert: %+v", idx)
 	}
 }
+
+// writeSkills adds a session with skill calls (one with arguments far past
+// the truncation limit) and typed slash commands.
+func (h *harness) writeSkills(now time.Time) {
+	h.t.Helper()
+	long := strings.Repeat("please review everything carefully ", 200)
+	var sb strings.Builder
+	for i, body := range []string{
+		`"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"release-notes","args":"v1"}}]}`,
+		`"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"code-review","args":"` + long + `"}}]}`,
+		`"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Skill","input":{"skill":"code-review","args":""}}]}`,
+		`"type":"user","message":{"role":"user","content":"<command-name>/code-review</command-name>\n<command-args>high</command-args>"}`,
+		`"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>\n<command-args></command-args>"}`,
+	} {
+		ts := now.Add(time.Duration(i-10) * time.Minute).UTC().Format(time.RFC3339)
+		fmt.Fprintf(&sb, `{"uuid":"k%d","timestamp":%q,"sessionId":"skills-session","cwd":"/home/bob/api",%s}`+"\n", i, ts, body)
+	}
+	dir := filepath.Join(h.root, "-home-bob-api")
+	os.MkdirAll(dir, 0o755)
+	if err := os.WriteFile(filepath.Join(dir, "skills-session.jsonl"), []byte(sb.String()), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+type topOut struct {
+	By      string `json:"by"`
+	Total   int    `json:"total"`
+	Groups  int    `json:"groups"`
+	Buckets []struct {
+		Key   string `json:"key"`
+		Count int    `json:"count"`
+	} `json:"buckets"`
+}
+
+func (o topOut) String() string {
+	var parts []string
+	for _, b := range o.Buckets {
+		parts = append(parts, fmt.Sprintf("%s=%d", b.Key, b.Count))
+	}
+	return strings.Join(parts, " ")
+}
+
+func TestTopCommand(t *testing.T) {
+	h := newHarness(t)
+	h.writeSkills(time.Now())
+
+	var out topOut
+	h.json(&out, "top", "--by", "skill", "--since", "7d")
+	if out.String() != "code-review=2 release-notes=1" || out.Total != 3 {
+		t.Fatalf("top --by skill: %s (total %d)", out, out.Total)
+	}
+	out = topOut{}
+	h.json(&out, "top", "-b", "command", "-s", "7d")
+	if out.String() != "/clear=1 /code-review=1" {
+		t.Fatalf("top --by command: %s", out)
+	}
+	// The fixture's own commands are older than a week; without --since
+	// they are counted too.
+	out = topOut{}
+	h.json(&out, "top", "--by", "command")
+	if out.Total != 3 {
+		t.Fatalf("top --by command (all time): %s", out)
+	}
+	out = topOut{}
+	h.json(&out, "top", "--by", "input:subagent_type")
+	if out.String() != "Explore=1" {
+		t.Fatalf("top --by input:subagent_type: %s", out)
+	}
+	txt := h.ok("top", "--by", "skill", "-n", "1", "--color", "never")
+	if !strings.Contains(txt, "code-review") || !strings.Contains(txt, "3 messages in 2 groups by skill, showing 1") {
+		t.Fatalf("human top output:\n%s", txt)
+	}
+
+	for _, args := range [][]string{{"top"}, {"top", "--by", "bogus"}, {"top", "--by", "input:a b"}} {
+		if _, errOut, code := h.run(args...); code != 2 {
+			t.Errorf("%v: exit %d (%s), want usage error", args, code, errOut)
+		}
+	}
+}
+
+func TestSearchFullText(t *testing.T) {
+	h := newHarness(t)
+	h.writeSkills(time.Now())
+	var res struct {
+		Hits []struct {
+			Snippet string `json:"snippet"`
+			Text    string `json:"text"`
+		} `json:"hits"`
+	}
+	h.json(&res, "search", "carefully", "--tool", "Skill", "--full-text")
+	if len(res.Hits) != 1 || !strings.HasPrefix(res.Hits[0].Text, "skill=code-review\nargs=please review") ||
+		len(res.Hits[0].Text) <= len(res.Hits[0].Snippet) {
+		t.Fatalf("--full-text should return the stored text: %+v", res.Hits)
+	}
+	res.Hits = nil
+	h.json(&res, "search", "carefully", "--tool", "Skill")
+	if len(res.Hits) != 1 || res.Hits[0].Text != "" {
+		t.Fatal("text is only included with --full-text")
+	}
+}
+
+func TestTopKeyCommand(t *testing.T) {
+	h := newHarness(t)
+	h.writeSkills(time.Now())
+	txt := h.ok("top", "--by", "command", "--key", "/code-review", "--color", "never")
+	if !strings.Contains(txt, "with args 1/1") || strings.Contains(txt, "/clear") {
+		t.Fatalf("top --key:\n%s", txt)
+	}
+	txt = h.ok("top", "--by", "skill", "--color", "never")
+	if !strings.Contains(txt, "code-review") || !strings.Contains(txt, "with args 1/2") {
+		t.Fatalf("top --by skill with_args:\n%s", txt)
+	}
+}

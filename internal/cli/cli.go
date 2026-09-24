@@ -45,6 +45,7 @@ func commands() []command {
 	return []command{
 		{"search", "Search messages (default command)", (*app).search},
 		{"show", "Show a message with context, or a whole session", (*app).show},
+		{"top", "Count matching messages grouped by skill, command, project, day…", (*app).top},
 		{"sessions", "List sessions", (*app).sessions},
 		{"projects", "List projects", (*app).projects},
 		{"index", "Build or update the index", (*app).index},
@@ -193,12 +194,13 @@ func (a *app) progress() func(done, total int) {
 
 // searchFlags are shared by search and show.
 type searchFlags struct {
-	project, since, until, kinds, role, tool, branch, sources, color string
-	limit, context                                                   int
-	all, subagent, json, noSync, explain                             bool
+	project, since, until, kinds, role, tool, branch, sources, color, by string
+	limit, context                                                       int
+	all, subagent, json, noSync, explain, fullText                       bool
 }
 
-func (s *searchFlags) register(fs *flagSet, withLimit bool) {
+// register adds the shared flags; searching commands also get -C.
+func (s *searchFlags) register(fs *flagSet, withLimit, withContext bool) {
 	fs.str(&s.project, "p", "project", "", "<substr>", "filter by project name or cwd substring")
 	fs.str(&s.since, "s", "since", "", "<when>", "only messages after (7d, 12h, 2026-09-01, today)")
 	fs.str(&s.until, "u", "until", "", "<when>", "only messages before (a bare date includes that day)")
@@ -210,7 +212,9 @@ func (s *searchFlags) register(fs *flagSet, withLimit bool) {
 	if withLimit {
 		fs.int(&s.limit, "n", "limit", 20, "<n>", "maximum number of results")
 	}
-	fs.int(&s.context, "C", "context", 0, "<n>", "show n messages before and after each hit")
+	if withContext {
+		fs.int(&s.context, "C", "context", 0, "<n>", "show n messages before and after each hit")
+	}
 	fs.bool(&s.all, "", "all", "include tool_use, tool_result, meta and system messages")
 	fs.bool(&s.subagent, "", "include-subagent", "include sub-agent (sidechain) messages")
 	fs.bool(&s.json, "", "json", "machine-readable output")
@@ -263,7 +267,8 @@ The index is updated incrementally before every query unless --no-sync.`
 func (a *app) search(args []string) error {
 	var s searchFlags
 	fs := newFlagSet("search")
-	s.register(fs, true)
+	s.register(fs, true, true)
+	fs.bool(&s.fullText, "", "full-text", "print whole messages (in --json: add a text field) instead of snippets")
 	pos, err := a.parseFlags(fs, args, "agentory search <query> [flags]", searchDesc)
 	if err != nil {
 		return err
@@ -289,6 +294,7 @@ func (a *app) search(args []string) error {
 	}
 	elapsed := time.Since(start)
 	r := a.renderer(s.color, plan.Terms)
+	r.fullText = s.fullText
 
 	type ctxMsgs struct{ before, after []query.Message }
 	ctxs := make([]ctxMsgs, len(hits))
@@ -309,6 +315,9 @@ func (a *app) search(args []string) error {
 		}
 		for i, h := range hits {
 			jh := toJSONHit(h, plan.Terms)
+			if s.fullText {
+				jh.Text = h.Text
+			}
 			if s.context > 0 {
 				jh.Before, jh.After = toJSONCtx(ctxs[i].before, plan.Terms), toJSONCtx(ctxs[i].after, plan.Terms)
 			}
@@ -332,13 +341,81 @@ func (a *app) search(args []string) error {
 	return nil
 }
 
+const topDesc = `Count the messages that match an optional query and the usual filters,
+grouped by a dimension. Dimensions:
+
+  skill        Skill tool invocations, by skill name
+  command      slash commands you typed, by name (/clear, /deploy …)
+  tool         tool calls, by tool name
+  input:<key>  tool calls, by one input field (input:subagent_type …)
+  project      last element of the working directory
+  branch, session, kind, role, source
+  day          local calendar day (oldest first)
+
+For skill and command, each group reports how many uses carried arguments
+(what followed the name); --key restricts the output to one group, e.g.
+
+  agentory top --by command --key /deploy -s 30d
+
+skill, command, tool and input:<key> imply the matching kinds; the others
+use the default kinds unless -k or --all is given. -n limits the number of
+groups (default 20); total and groups in --json count all of them.`
+
+func (a *app) top(args []string) error {
+	var s searchFlags
+	fs := newFlagSet("top")
+	var key string
+	fs.str(&s.by, "b", "by", "", "<dimension>", strings.Join(query.TopDimensions, " | "))
+	fs.str(&key, "", "key", "", "<value>", "only this group, e.g. --by command --key /deploy")
+	s.register(fs, true, false)
+	pos, err := a.parseFlags(fs, args, "agentory top --by <dimension> [query] [flags]", topDesc)
+	if err != nil {
+		return err
+	}
+	if s.by == "" {
+		return errUsage{"missing --by (" + strings.Join(query.TopDimensions, ", ") + ")"}
+	}
+	f, err := a.filter(&s)
+	if err != nil {
+		return err
+	}
+	db, err := a.openIndex(s.noSync, f.Sources)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	res, plan, err := query.Top(db, strings.Join(pos, " "), s.by, f, query.TopOptions{Key: key})
+	if err != nil {
+		if plan == nil {
+			return errUsage{err.Error()}
+		}
+		return err
+	}
+	if s.json {
+		out := struct {
+			*query.TopResult
+			Plan *query.Plan `json:"plan,omitempty"`
+		}{TopResult: res}
+		if s.explain {
+			out.Plan = plan
+		}
+		return a.writeJSON(out)
+	}
+	r := a.renderer(s.color, nil)
+	if s.explain {
+		r.explain(plan, 0)
+	}
+	r.top(res)
+	return nil
+}
+
 const showDesc = `Show one message in full (by numeric id, as printed by search) with -C
 messages of context, or a whole session (by id or unique id prefix).`
 
 func (a *app) show(args []string) error {
 	var s searchFlags
 	fs := newFlagSet("show")
-	s.register(fs, false)
+	s.register(fs, false, true)
 	pos, err := a.parseFlags(fs, args, "agentory show <msg-id|session-id> [-C N] [flags]", showDesc)
 	if err != nil {
 		return err

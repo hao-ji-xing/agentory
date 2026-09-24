@@ -22,9 +22,10 @@ const (
 )
 
 type renderer struct {
-	w     io.Writer
-	color bool
-	terms []query.Term
+	w        io.Writer
+	color    bool
+	terms    []query.Term
+	fullText bool // print whole messages instead of snippets
 }
 
 func isTerminal(w io.Writer) bool {
@@ -124,7 +125,13 @@ func (r *renderer) hit(m query.Message, before, after []query.Message, n int) {
 		r.contextLine(c)
 	}
 	fmt.Fprintln(r.w, r.header(m))
-	fmt.Fprintf(r.w, "  %s\n", r.highlight(query.Snippet(m.Text, r.terms, snippetWidth)))
+	if r.fullText {
+		for _, l := range strings.Split(strings.TrimRight(m.Text, "\n"), "\n") {
+			fmt.Fprintf(r.w, "  %s\n", r.highlight(l))
+		}
+	} else {
+		fmt.Fprintf(r.w, "  %s\n", r.highlight(query.Snippet(m.Text, r.terms, snippetWidth)))
+	}
 	for _, c := range after {
 		r.contextLine(c)
 	}
@@ -197,6 +204,38 @@ func (r *renderer) projects(ps []query.Project) {
 	}
 }
 
+func (r *renderer) top(res *query.TopResult) {
+	width := 8
+	for _, b := range res.Buckets {
+		width = max(width, len([]rune(b.Key)))
+	}
+	width = min(width, 48)
+	for _, b := range res.Buckets {
+		label := ""
+		if b.Label != "" {
+			label = "  " + r.paint(ansiDim, b.Label)
+		}
+		args := ""
+		if b.WithArgs != nil {
+			args = fmt.Sprintf("  with args %d/%d", *b.WithArgs, b.Count)
+		}
+		fmt.Fprintf(r.w, "%6d  %s  last %s%s%s\n", b.Count,
+			r.paint(ansiCyan, padRunes(truncRunes(b.Key, width), width)), localTime(b.Last), args, label)
+	}
+	more := ""
+	if res.Groups > len(res.Buckets) {
+		more = fmt.Sprintf(", showing %d (use -n for more)", len(res.Buckets))
+	}
+	fmt.Fprintf(r.w, "%d messages in %d groups by %s%s\n", res.Total, res.Groups, res.By, more)
+}
+
+func padRunes(s string, n int) string {
+	if k := len([]rune(s)); k < n {
+		return s + strings.Repeat(" ", n-k)
+	}
+	return s
+}
+
 func (r *renderer) explain(p *query.Plan, elapsed time.Duration) {
 	var parts []string
 	for _, t := range p.Terms {
@@ -253,6 +292,7 @@ type jsonHit struct {
 	Tool      string      `json:"tool,omitempty"`
 	NChars    int         `json:"n_chars"`
 	Snippet   string      `json:"snippet"`
+	Text      string      `json:"text,omitempty"` // with --full-text
 	Show      string      `json:"show"`
 	Before    []jsonBrief `json:"before,omitempty"`
 	After     []jsonBrief `json:"after,omitempty"`

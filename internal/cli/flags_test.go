@@ -44,7 +44,7 @@ func TestFlagsInterspersed(t *testing.T) {
 	} {
 		var s searchFlags
 		fs := newFlagSet("t")
-		s.register(fs, true)
+		s.register(fs, true, true)
 		pos, err := fs.parse(args)
 		if err != nil || s.project != "erp" || len(pos) != 2 || pos[0] != "foo" || pos[1] != "bar" {
 			t.Errorf("%v: pos=%v project=%q err=%v", args, pos, s.project, err)
@@ -52,7 +52,7 @@ func TestFlagsInterspersed(t *testing.T) {
 	}
 	var s searchFlags
 	fs := newFlagSet("t")
-	s.register(fs, true)
+	s.register(fs, true, true)
 	pos, _ := fs.parse([]string{"-n", "5", "--", "-literal", "-p"})
 	if s.limit != 5 || len(pos) != 2 || pos[0] != "-literal" {
 		t.Errorf("-- terminator: pos=%v limit=%d", pos, s.limit)
