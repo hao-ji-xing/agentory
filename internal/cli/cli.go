@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haojixing/agentory/internal/index"
-	"github.com/haojixing/agentory/internal/model"
-	"github.com/haojixing/agentory/internal/query"
-	"github.com/haojixing/agentory/internal/source"
+	"github.com/hao-ji-xing/agentory/internal/index"
+	"github.com/hao-ji-xing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/query"
+	"github.com/hao-ji-xing/agentory/internal/source"
 )
 
 // Version is set at build time via -ldflags "-X ...cli.Version=v1.2.3".

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haojixing/agentory/internal/index"
-	"github.com/haojixing/agentory/internal/model"
-	"github.com/haojixing/agentory/internal/source/claudecode"
+	"github.com/hao-ji-xing/agentory/internal/index"
+	"github.com/hao-ji-xing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/source/claudecode"
 )
 
 var day0 = time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)

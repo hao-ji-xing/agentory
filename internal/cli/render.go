@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haojixing/agentory/internal/query"
+	"github.com/hao-ji-xing/agentory/internal/query"
 )
 
 const snippetWidth = 160

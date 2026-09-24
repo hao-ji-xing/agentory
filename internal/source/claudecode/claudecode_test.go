@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haojixing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/model"
 )
 
 const hdr = `"uuid":"u1","parentUuid":"p0","timestamp":"2026-09-11T05:57:00.123Z","sessionId":"s1","cwd":"/home/alice/code/demo","gitBranch":"main"`

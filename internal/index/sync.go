@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/haojixing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/model"
 )
 
 // headLen is how many leading bytes are fingerprinted to detect a file that

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haojixing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/model"
 )
 
 // flagSet wraps flag.FlagSet with short/long aliases and interspersed

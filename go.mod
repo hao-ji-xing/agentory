@@ -1,4 +1,4 @@
-module github.com/haojixing/agentory
+module github.com/hao-ji-xing/agentory
 
 go 1.26.2
 

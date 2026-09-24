@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/haojixing/agentory/internal/model"
-	"github.com/haojixing/agentory/internal/source/claudecode"
+	"github.com/hao-ji-xing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/source/claudecode"
 )
 
 // builtin lists the constructors of every shipped source.

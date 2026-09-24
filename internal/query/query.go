@@ -9,8 +9,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/haojixing/agentory/internal/index"
-	"github.com/haojixing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/index"
+	"github.com/hao-ji-xing/agentory/internal/model"
 )
 
 // MinFTSChars is the shortest term the trigram tokenizer can match.

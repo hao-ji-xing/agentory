@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/haojixing/agentory/internal/model"
+	"github.com/hao-ji-xing/agentory/internal/model"
 )
 
 // Name is the value stored in the `source` column.

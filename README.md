@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/haojixing/agentory/actions/workflows/ci.yml/badge.svg)](https://github.com/haojixing/agentory/actions/workflows/ci.yml)
+[![CI](https://github.com/hao-ji-xing/agentory/actions/workflows/ci.yml/badge.svg)](https://github.com/hao-ji-xing/agentory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Full-text search over your AI coding agent conversation history.**
@@ -68,17 +68,17 @@ Markers: `u>` prompt, `u/` slash command, `a>` reply, `a~` thinking,
 With Go 1.26+:
 
 ```sh
-go install github.com/haojixing/agentory@latest
+go install github.com/hao-ji-xing/agentory@latest
 ```
 
 Or download a prebuilt binary for Linux, macOS or Windows (amd64/arm64) from
-the [releases page](https://github.com/haojixing/agentory/releases), put it on
+the [releases page](https://github.com/hao-ji-xing/agentory/releases), put it on
 your `PATH`, and run `agentory doctor`.
 
 From source:
 
 ```sh
-git clone https://github.com/haojixing/agentory && cd agentory
+git clone https://github.com/hao-ji-xing/agentory && cd agentory
 make install        # or: make build && ./agentory doctor
 ```
 

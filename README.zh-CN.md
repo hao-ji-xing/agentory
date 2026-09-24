@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-[![CI](https://github.com/haojixing/agentory/actions/workflows/ci.yml/badge.svg)](https://github.com/haojixing/agentory/actions/workflows/ci.yml)
+[![CI](https://github.com/hao-ji-xing/agentory/actions/workflows/ci.yml/badge.svg)](https://github.com/hao-ji-xing/agentory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **跨 AI coding agent 的对话历史全文检索 CLI。**
@@ -64,17 +64,17 @@ plan: mode=like  terms: "折扣"→LIKE (shorter than 3 chars)
 Go 1.26+：
 
 ```sh
-go install github.com/haojixing/agentory@latest
+go install github.com/hao-ji-xing/agentory@latest
 ```
 
-或者从 [Releases 页面](https://github.com/haojixing/agentory/releases) 下载
+或者从 [Releases 页面](https://github.com/hao-ji-xing/agentory/releases) 下载
 Linux / macOS / Windows（amd64/arm64）预编译二进制，放进 `PATH` 后运行
 `agentory doctor` 自检。
 
 从源码构建：
 
 ```sh
-git clone https://github.com/haojixing/agentory && cd agentory
+git clone https://github.com/hao-ji-xing/agentory && cd agentory
 make install        # 或：make build && ./agentory doctor
 ```
 

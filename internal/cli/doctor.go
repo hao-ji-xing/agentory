@@ -9,8 +9,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/haojixing/agentory/internal/index"
-	"github.com/haojixing/agentory/internal/source"
+	"github.com/hao-ji-xing/agentory/internal/index"
+	"github.com/hao-ji-xing/agentory/internal/source"
 )
 
 func (a *app) doctor(args []string) error {

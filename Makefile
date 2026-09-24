@@ -1,6 +1,6 @@
 BINARY  := agentory
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/haojixing/agentory/internal/cli.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/hao-ji-xing/agentory/internal/cli.Version=$(VERSION)
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
 export CGO_ENABLED := 0
